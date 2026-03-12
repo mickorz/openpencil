@@ -85,6 +85,21 @@ export interface AIStreamChunk {
   content: string
 }
 
+export interface AITaskReportSection {
+  title: string
+  input?: string
+  rawOutput?: string
+  parsedResult?: string
+  error?: string
+}
+
+export interface AITaskReportTrace {
+  mode: 'chat' | 'design' | 'design-modification'
+  rawOutput?: string
+  parsedResult?: string
+  sections: AITaskReportSection[]
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator types — used for parallel sub-agent design generation
 // ---------------------------------------------------------------------------
@@ -136,7 +151,6 @@ export interface OrchestratorPlan {
     height: number
     layout?: 'none' | 'vertical' | 'horizontal'
     gap?: number
-    padding?: number | [number, number] | [number, number, number, number]
     fill?: Array<{ type: string; color: string }>
   }
   styleGuide?: StyleGuide
@@ -165,5 +179,6 @@ export interface SubAgentResult {
   subtaskId: string
   nodes: import('@/types/pen').PenNode[]
   rawResponse: string
+  prompt?: string
   error?: string
 }

@@ -16,3 +16,6 @@ electron-dist/
 dist-electron/
 .openpencil-tmp/
 scripts/figma-*
+Docs/TaskReports/
+TaskReports/
+Docs/AI聊天开始到完成任务整体流程.md

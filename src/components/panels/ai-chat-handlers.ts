@@ -12,8 +12,9 @@ import {
   extractAndApplyDesignModification,
 } from '@/services/ai/design-generator'
 import { trimChatHistory } from '@/services/ai/context-optimizer'
-import type { ChatMessage as ChatMessageType } from '@/services/ai/ai-types'
+import type { AITaskReportTrace, ChatMessage as ChatMessageType } from '@/services/ai/ai-types'
 import { CHAT_STREAM_THINKING_CONFIG } from '@/services/ai/ai-runtime-config'
+import { startTaskReport, updateTaskReport } from '@/services/ai/task-report-service'
 
 /** Intent classification prompt — lightweight LLM call to determine message routing */
 const CLASSIFY_PROMPT = `You are a UI design tool assistant. Classify the user's message intent.
@@ -96,6 +97,11 @@ export function buildContextString(): string {
   return parts.length > 0 ? `\n\n[Canvas context: ${parts.join('. ')}]` : ''
 }
 
+function buildTaskReportTitle(messageText: string, hasAttachments: boolean): string {
+  const base = messageText.trim() || (hasAttachments ? 'image-task' : 'task')
+  return base.slice(0, 48)
+}
+
 /** Shared chat logic hook */
 export function useChatHandlers() {
   const [input, setInput] = useState('')
@@ -160,21 +166,102 @@ export function useChatHandlers() {
       const currentProvider = useAIStore.getState().modelGroups.find((g) =>
         g.models.some((m) => m.value === model),
       )?.provider
+      const reportTaskInput = fullUserMessage || (hasAttachments ? '[attachment only]' : '')
+      const reportTitle = buildTaskReportTitle(messageText, hasAttachments)
 
       let accumulated = ''
       let appliedCount = 0
       let isDesign = false
+      let taskMode: AITaskReportTrace['mode'] = 'chat'
+      let taskTrace: AITaskReportTrace | null = null
+      let taskError: string | undefined
+      const reportSnapshot: {
+        title: string
+        mode: AITaskReportTrace['mode']
+        taskInput: string
+        provider?: string
+        model?: string
+        attachments: typeof pendingAttachments
+        rawOutput?: string
+        parsedResult?: string
+        error?: string
+        sections: AITaskReportTrace['sections']
+      } = {
+        title: reportTitle,
+        mode: taskMode,
+        taskInput: reportTaskInput,
+        provider: currentProvider,
+        model,
+        attachments: pendingAttachments,
+        sections: [
+          {
+            title: 'Task Result',
+            input: reportTaskInput,
+          },
+        ],
+      }
+      let reportId: string | null = null
+      let reportUpdateTimer: ReturnType<typeof setTimeout> | null = null
+      let reportFlushChain = Promise.resolve()
+      const reportStartPromise = startTaskReport(reportSnapshot)
+        .then((handle) => {
+          reportId = handle.reportId
+          return handle
+        })
+        .catch((error) => {
+          console.error('[task-report:start]', error)
+          return null
+        })
+
+      const queueReportSync = (force = false) => {
+        const run = async () => {
+          const handle = await reportStartPromise
+          if (!handle || !reportId) return
+          await updateTaskReport(reportId, reportSnapshot)
+        }
+
+        if (force) {
+          if (reportUpdateTimer) {
+            clearTimeout(reportUpdateTimer)
+            reportUpdateTimer = null
+          }
+          reportFlushChain = reportFlushChain.then(run).catch((error) => {
+            console.error('[task-report:update]', error)
+          })
+          return
+        }
+
+        if (reportUpdateTimer) return
+        reportUpdateTimer = setTimeout(() => {
+          reportUpdateTimer = null
+          reportFlushChain = reportFlushChain.then(run).catch((error) => {
+            console.error('[task-report:update]', error)
+          })
+        }, 500)
+      }
+
+      const updateReportSnapshot = (
+        patch: Partial<typeof reportSnapshot>,
+        force = false,
+      ) => {
+        Object.assign(reportSnapshot, patch)
+        queueReportSync(force)
+      }
 
       const abortController = new AbortController()
       useAIStore.getState().setAbortController(abortController)
 
       try {
         // Classify intent via lightweight LLM call
-        const classified = await classifyIntent(
-          messageText, model, currentProvider,
-        )
+        const classified = hasAttachments
+          ? { isDesign: false }
+          : await classifyIntent(
+              messageText, model, currentProvider,
+            )
         isDesign = classified.isDesign
         const isModification = isDesign && hasSelection
+        taskMode = isModification ? 'design-modification' : (isDesign ? 'design' : 'chat')
+        updateReportSnapshot({ mode: taskMode })
 
         if (isDesign) {
              if (isModification) {
@@ -185,13 +272,24 @@ export function useChatHandlers() {
                // We update the UI to show we are working
                accumulated = '<step title="Checking guidelines">Analyzing modification request...</step>'
                updateLastMessage(accumulated)
+               updateReportSnapshot({
+                 rawOutput: accumulated,
+                 sections: [
+                   {
+                     title: 'Task Result',
+                     input: reportTaskInput,
+                     rawOutput: accumulated,
+                   },
+                 ],
+               })
 
-               const { rawResponse, nodes } = await generateDesignModification(selectedNodes, messageText, {
+               const { rawResponse, nodes, debugTrace } = await generateDesignModification(selectedNodes, messageText, {
                  variables: modDoc.variables,
                  themes: modDoc.themes,
                  model,
                  provider: currentProvider,
                }, abortController.signal)
+               taskTrace = debugTrace
                accumulated = rawResponse
                updateLastMessage(accumulated)
 
@@ -202,7 +300,7 @@ export function useChatHandlers() {
                // --- GENERATION MODE (animated) ---
                const doc = useDocumentStore.getState().document
                const concurrency = useAIStore.getState().concurrency
-               const { rawResponse, nodes } = await generateDesign({
+               const { rawResponse, nodes, debugTrace } = await generateDesign({
                  prompt: fullUserMessage,
                  model,
                  provider: currentProvider,
@@ -217,12 +315,23 @@ export function useChatHandlers() {
                  animated: true,
                  onApplyPartial: (partialCount: number) => {
                    appliedCount += partialCount
-                 },
-                 onTextUpdate: (text: string) => {
+                  },
+                  onTextUpdate: (text: string) => {
                     accumulated = text
                     updateLastMessage(text)
-                 },
-               }, abortController.signal)
+                    updateReportSnapshot({
+                      rawOutput: text,
+                      sections: [
+                        {
+                          title: 'Task Result',
+                          input: reportTaskInput,
+                          rawOutput: text,
+                        },
+                      ],
+                    })
+                  },
+                }, abortController.signal)
+               taskTrace = debugTrace
                // Ensure final text is captured
                accumulated = rawResponse
                if (appliedCount === 0 && nodes.length > 0) {
@@ -240,6 +349,10 @@ export function useChatHandlers() {
             // Trim history to prevent unbounded context growth
             const trimmedHistory = trimChatHistory(chatHistory)
             let chatThinking = ''
+            const getChatReportOutput = () =>
+              chatThinking
+                ? `<step title="Thinking">${chatThinking}</step>\n${accumulated}`
+                : accumulated
             for await (const chunk of streamChat(
               CHAT_SYSTEM_PROMPT,
               trimmedHistory,
@@ -253,6 +366,16 @@ export function useChatHandlers() {
                  // Show thinking content as a collapsible step in the panel
                  const thinkingStep = `<step title="Thinking">${chatThinking}</step>`
                  updateLastMessage(thinkingStep + (accumulated ? '\n' + accumulated : ''))
+                 updateReportSnapshot({
+                   rawOutput: getChatReportOutput(),
+                   sections: [
+                     {
+                       title: 'Task Result',
+                       input: reportTaskInput,
+                       rawOutput: getChatReportOutput(),
+                     },
+                   ],
+                 })
                } else if (chunk.type === 'text') {
                  accumulated += chunk.content
                  // Keep thinking step visible above text content
@@ -260,21 +383,81 @@ export function useChatHandlers() {
                    ? `<step title="Thinking">${chatThinking}</step>\n`
                    : ''
                  updateLastMessage(thinkingPrefix + accumulated)
+                 updateReportSnapshot({
+                   rawOutput: getChatReportOutput(),
+                   parsedResult: accumulated,
+                   sections: [
+                     {
+                       title: 'Task Result',
+                       input: reportTaskInput,
+                       rawOutput: getChatReportOutput(),
+                       parsedResult: accumulated,
+                     },
+                   ],
+                 })
                } else if (chunk.type === 'error') {
                  accumulated += `\n\n**Error:** ${chunk.content}`
                  updateLastMessage(accumulated)
+                 taskError = chunk.content
+                 updateReportSnapshot({
+                   rawOutput: getChatReportOutput(),
+                   parsedResult: accumulated,
+                   error: chunk.content,
+                   sections: [
+                     {
+                       title: 'Task Result',
+                       input: reportTaskInput,
+                       rawOutput: getChatReportOutput(),
+                       parsedResult: accumulated,
+                       error: chunk.content,
+                     },
+                   ],
+                 })
                }
+            }
+            taskTrace = {
+              mode: 'chat',
+              rawOutput: chatThinking
+                ? `<step title="Thinking">${chatThinking}</step>\n${accumulated}`
+                : accumulated,
+              parsedResult: accumulated,
+              sections: [
+                {
+                  title: 'Chat Response',
+                  input: fullUserMessage,
+                  rawOutput: chatThinking
+                    ? `<step title="Thinking">${chatThinking}</step>\n${accumulated}`
+                    : accumulated,
+                  parsedResult: accumulated,
+                },
+              ],
             }
         }
       } catch (error) {
          // Silently handle user-initiated stop
          if (abortController.signal.aborted) {
+           taskError = 'Task aborted by user.'
            // Keep partial content, don't show error
          } else {
            const errMsg = error instanceof Error ? error.message : 'Unknown error'
+           taskError = errMsg
            accumulated += `\n\n**Error:** ${errMsg}`
            updateLastMessage(accumulated)
          }
+         updateReportSnapshot({
+           rawOutput: accumulated,
+           parsedResult: accumulated,
+           error: taskError,
+           sections: [
+             {
+               title: 'Task Result',
+               input: reportTaskInput,
+               rawOutput: accumulated,
+               parsedResult: accumulated,
+               error: taskError,
+             },
+           ],
+         })
       } finally {
          useAIStore.getState().setAbortController(null)
          setStreaming(false)
@@ -294,6 +477,38 @@ export function useChatHandlers() {
            last.isStreaming = false
         }
         return { messages: msgs }
+      })
+
+      const finalTrace = taskTrace ?? {
+        mode: taskMode,
+        rawOutput: accumulated,
+        parsedResult: isDesign && appliedCount > 0 ? `Applied nodes: ${appliedCount}` : accumulated,
+        sections: [
+          {
+            title: 'Task Result',
+            input: fullUserMessage,
+            rawOutput: accumulated,
+            parsedResult: isDesign && appliedCount > 0 ? `Applied nodes: ${appliedCount}` : accumulated,
+            error: taskError,
+          },
+        ],
+      }
+
+      updateReportSnapshot({
+        title: reportTitle,
+        mode: finalTrace.mode,
+        taskInput: reportTaskInput,
+        provider: currentProvider,
+        model,
+        attachments: pendingAttachments,
+        rawOutput: finalTrace.rawOutput,
+        parsedResult: finalTrace.parsedResult,
+        error: taskError,
+        sections: finalTrace.sections,
+      }, true)
+
+      void reportFlushChain.catch((error) => {
+        console.error('[task-report:flush]', error)
       })
     },
     [input, isStreaming, isLoadingModels, model, availableModels, messages, addMessage, updateLastMessage, setStreaming],

@@ -13,7 +13,7 @@ interface CodexExecOptions {
   thinkingBudgetTokens?: number
   effort?: ThinkingEffort
   timeoutMs?: number
-  /** Paths to temporary image files to reference in the prompt */
+  /** 通过 Codex CLI 的 --image 传入图片文件 */
   imageFiles?: string[]
 }
 
@@ -54,32 +54,13 @@ export async function runCodexExec(
 ): Promise<CodexCliResult> {
   const tempDir = await mkdtemp(join(tmpdir(), 'openpencil-codex-'))
   const outputPath = join(tempDir, 'last-message.txt')
-  const prompt = buildPrompt(options.systemPrompt, userPrompt, options.imageFiles)
-  const codexEffort = resolveCodexEffort(options.thinkingMode, options.effort)
-
-  const args = [
-    'exec',
-    '--json',
-    '--skip-git-repo-check',
-    '--sandbox',
-    'read-only',
-    '--output-last-message',
-    outputPath,
-  ]
-
-  if (options.model) {
-    args.push('--model', options.model)
-  }
-
-  if (codexEffort) {
-    args.push('--config', `model_reasoning_effort="${codexEffort}"`)
-  }
-
-  args.push(prompt)
+  const prompt = buildPrompt(options.systemPrompt, userPrompt)
+  const args = buildCodexExecArgs(outputPath, options)
 
   try {
     const runResult = await executeCodexCommand(
       args,
+      prompt,
       options.timeoutMs ?? DEFAULT_CODEX_TIMEOUT_MS,
     )
     const finalText = await readFile(outputPath, 'utf-8').catch(() => '')
@@ -101,14 +82,14 @@ export async function runCodexExec(
   }
 }
 
-function buildPrompt(systemPrompt: string | undefined, userPrompt: string, imageFiles?: string[]): string {
+export function buildPrompt(
+  systemPrompt: string | undefined,
+  userPrompt: string,
+): string {
   const userText = userPrompt.trim()
-  const imageSection = imageFiles && imageFiles.length > 0
-    ? '\n' + imageFiles.map((f) => `[Attached image: ${f} — read this file to see the image]`).join('\n')
-    : ''
 
   if (!systemPrompt?.trim()) {
-    return userText + imageSection
+    return userText
   }
 
   return [
@@ -116,8 +97,42 @@ function buildPrompt(systemPrompt: string | undefined, userPrompt: string, image
     systemPrompt.trim(),
     '',
     'USER REQUEST:',
-    userText + imageSection,
+    userText,
   ].join('\n')
+}
+
+export function buildCodexExecArgs(
+  outputPath: string,
+  options: CodexExecOptions = {},
+): string[] {
+  const codexEffort = resolveCodexEffort(options.thinkingMode, options.effort)
+
+  const args = [
+    'exec',
+    '--json',
+    '--skip-git-repo-check',
+    '--sandbox',
+    'read-only',
+    '--output-last-message',
+    outputPath,
+  ]
+
+  if (options.model) {
+    args.push('--model', options.model)
+  }
+
+  if (codexEffort) {
+    args.push('--config', `model_reasoning_effort="${codexEffort}"`)
+  }
+
+  for (const imageFile of options.imageFiles ?? []) {
+    args.push('--image', imageFile)
+  }
+
+  // 使用 stdin 传递 prompt，避免 Windows 命令行长度限制
+  args.push('-')
+
+  return args
 }
 
 function resolveCodexEffort(
@@ -145,13 +160,14 @@ function resolveCodexEffort(
 
 async function executeCodexCommand(
   args: string[],
+  prompt: string,
   timeoutMs: number,
 ): Promise<{ text: string; errors: string[] }> {
   return await new Promise((resolve, reject) => {
     const child = spawn('codex', args, {
       env: filterCodexEnv(process.env as Record<string, string | undefined>),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // On Windows, npm-installed CLIs are .cmd scripts — need shell to resolve them
+      stdio: ['pipe', 'pipe', 'pipe'],
+      // Windows 上 npm 安装的 codex 需要通过 shell 解析
       ...(process.platform === 'win32' && { shell: true }),
     })
 
@@ -191,10 +207,19 @@ async function executeCodexCommand(
       stderrBuffer += chunk.toString('utf-8')
     })
 
+    child.stdin.on('error', () => {
+      // 进程提前退出时忽略 stdin 写入错误，交给 close/error 统一处理
+    })
+
     child.on('error', (err) => {
       clearTimeout(timer)
       reject(err)
     })
+
+    const stdinPayload = prompt.trim().length > 0
+      ? prompt
+      : 'Please help with the request.'
+    child.stdin.end(`${stdinPayload}\n`)
 
     child.on('close', (code) => {
       clearTimeout(timer)
@@ -238,7 +263,6 @@ function parseCodexJsonLine(
     return { error: message || 'Codex returned an unknown error.' }
   }
 
-  // Common Codex JSONL stream events include deltas in "delta" or "text".
   const text =
     getStringField(parsed, ['delta'])
     || getStringField(parsed, ['text'])

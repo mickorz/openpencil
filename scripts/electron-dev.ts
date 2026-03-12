@@ -61,6 +61,21 @@ async function compileElectron(): Promise<void> {
   console.log('[electron-dev] Electron files compiled')
 }
 
+function getViteDevCommand(): { command: string; args: string[] } {
+  // Windows 下使用 Node 运行 Vite，避免 Bun 运行时触发 Nitro 命名管道异常
+  if (process.platform === 'win32') {
+    return {
+      command: 'npx.cmd',
+      args: ['vite', 'dev', '--port', String(VITE_DEV_PORT)],
+    }
+  }
+
+  return {
+    command: 'bun',
+    args: ['--bun', 'vite', 'dev', '--port', String(VITE_DEV_PORT)],
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -68,7 +83,8 @@ async function compileElectron(): Promise<void> {
 async function main(): Promise<void> {
   // 1. Start Vite dev server
   console.log('[electron-dev] Starting Vite dev server...')
-  const vite = spawn('bun', ['--bun', 'run', 'dev'], {
+  const viteDev = getViteDevCommand()
+  const vite = spawn(viteDev.command, viteDev.args, {
     cwd: ROOT,
     stdio: 'inherit',
     env: { ...process.env },
@@ -94,21 +110,7 @@ async function main(): Promise<void> {
   await waitForServer(`http://localhost:${VITE_DEV_PORT}`)
   console.log('[electron-dev] Vite is ready')
 
-  // 3. Compile MCP server + Electron files
-  console.log('[electron-dev] Compiling MCP server...')
-  await build({
-    platform: 'node',
-    bundle: true,
-    sourcemap: true,
-    target: 'node20',
-    format: 'cjs',
-    entryPoints: [join(ROOT, 'src', 'mcp', 'server.ts')],
-    outfile: join(ROOT, 'dist', 'mcp-server.cjs'),
-    alias: { '@': join(ROOT, 'src') },
-    define: { 'import.meta.env': '{}' },
-  })
-  console.log('[electron-dev] MCP server compiled')
-
+  // 3. Compile Electron files
   await compileElectron()
 
   // 4. Launch Electron

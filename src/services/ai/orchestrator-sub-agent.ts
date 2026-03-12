@@ -18,12 +18,11 @@ import type {
   SubAgentResult,
 } from './ai-types'
 import { streamChat } from './ai-service'
-import { SUB_AGENT_PROMPT, SUB_AGENT_PROMPT_SIMPLIFIED } from './orchestrator-prompts'
+import { SUB_AGENT_PROMPT } from './orchestrator-prompts'
 import {
   type PreparedDesignPrompt,
   getSubAgentTimeouts,
 } from './orchestrator-prompt-optimizer'
-import { resolveModelProfile, needsSimplifiedPrompt } from './model-profiles'
 import {
   expandRootFrameHeight,
   extractStreamingNodes,
@@ -92,7 +91,7 @@ export async function executeSubAgents(
   },
   abortSignal?: AbortSignal,
 ): Promise<SubAgentResult[]> {
-  const timeoutOptions = getSubAgentTimeouts(preparedPrompt.originalLength, request.model)
+  const timeoutOptions = getSubAgentTimeouts(preparedPrompt.originalLength)
 
   // Sequential path — each subtask runs one at a time
   if (concurrency <= 1) {
@@ -194,8 +193,7 @@ export async function executeSubAgents(
   // If ALL failed with zero nodes, throw
   const totalNodes = collected.reduce((sum, r) => sum + r.nodes.length, 0)
   if (totalNodes === 0 && collected.length > 0) {
-    const errors = collected.filter((r) => r.error).map((r) => r.error!)
-    const firstError = errors[0] ?? 'The model failed to generate any design output.'
+    const firstError = collected.find((r) => r.error)?.error ?? 'All sub-agents failed'
     throw new Error(firstError)
   }
 
@@ -243,17 +241,88 @@ async function executeSubAgent(
     request.context?.themes,
   )
 
-  // Select prompt variant based on model profile
-  const profile = resolveModelProfile(request.model)
-  const basePrompt = needsSimplifiedPrompt(profile) ? SUB_AGENT_PROMPT_SIMPLIFIED : SUB_AGENT_PROMPT
-  const systemPrompt = preparedPrompt.designPrinciples && !needsSimplifiedPrompt(profile)
-    ? `${basePrompt}\n\n${preparedPrompt.designPrinciples}`
-    : basePrompt
+  // Inject design principles into the system prompt (selective, not all at once)
+  const systemPrompt = preparedPrompt.designPrinciples
+    ? `${SUB_AGENT_PROMPT}\n\n${preparedPrompt.designPrinciples}`
+    : SUB_AGENT_PROMPT
 
   let rawResponse = ''
   const nodes: PenNode[] = []
   let streamOffset = 0
   let subtaskRootId: string | null = null
+
+  const applyParsedNodes = (parsedNodes: PenNode[]) => {
+    startNewAnimationBatch()
+    for (const node of parsedNodes) {
+      ensureIdPrefix(node, subtask.idPrefix)
+
+      if (agentColor && agentName) {
+        addAgentIndicatorRecursive(node, agentColor, agentName)
+      }
+      markNodesForAnimation([node])
+
+      const targetParent = subtaskRootId
+        ? subtaskRootId
+        : (subtask.parentFrameId ?? plan.rootFrame.id)
+      insertStreamingNode(node, targetParent)
+      if (!subtaskRootId) subtaskRootId = node.id
+      nodes.push(node)
+      progressEntry.nodeCount++
+      progress.totalNodes++
+    }
+    callbacks?.onApplyPartial?.(progress.totalNodes)
+  }
+
+  const retryStructuredOutput = async (): Promise<boolean> => {
+    const retryTimeouts: StreamTimeoutConfig = {
+      ...timeoutOptions,
+      hardTimeoutMs: Math.min(timeoutOptions.hardTimeoutMs, 45_000),
+      noTextTimeoutMs: Math.min(timeoutOptions.noTextTimeoutMs, 15_000),
+      firstTextTimeoutMs: timeoutOptions.firstTextTimeoutMs
+        ? Math.min(timeoutOptions.firstTextTimeoutMs, 12_000)
+        : 12_000,
+      thinkingMode: 'disabled',
+      effort: 'low',
+    }
+
+    const retryPrompt = buildSubAgentRepairPrompt(subtask, userPrompt, rawResponse)
+    let retryRaw = ''
+
+    progressEntry.thinking = 'Retrying structured node output...'
+    emitProgress(plan, progress, callbacks)
+
+    for await (const chunk of streamChat(
+      systemPrompt,
+      [{ role: 'user', content: retryPrompt }],
+      request.model,
+      retryTimeouts,
+      request.provider,
+      abortSignal,
+    )) {
+      if (chunk.type === 'text') {
+        retryRaw += chunk.content
+      } else if (chunk.type === 'error') {
+        console.warn(
+          `[SubAgent:${subtask.id}] Repair attempt failed: ${chunk.content}`,
+        )
+        return false
+      }
+    }
+
+    const retryNodes = extractJsonFromResponse(retryRaw)
+    if (!retryNodes || retryNodes.length === 0) {
+      console.warn(
+        `[SubAgent:${subtask.id}] Repair attempt returned no parseable nodes. Preview:\n${retryRaw.slice(0, 1200)}`,
+      )
+      return false
+    }
+
+    rawResponse = rawResponse
+      ? `${rawResponse}\n\n[repair]\n${retryRaw}`
+      : retryRaw
+    applyParsedNodes(retryNodes)
+    return true
+  }
 
   try {
     for await (const chunk of streamChat(
@@ -326,7 +395,7 @@ async function executeSubAgent(
       } else if (chunk.type === 'error') {
         progressEntry.status = 'error'
         emitProgress(plan, progress, callbacks)
-        return { subtaskId: subtask.id, nodes, rawResponse, error: chunk.content }
+        return { subtaskId: subtask.id, nodes, rawResponse, prompt: userPrompt, error: chunk.content }
       }
     }
 
@@ -357,30 +426,22 @@ async function executeSubAgent(
       }
     }
 
+    if (nodes.length === 0 && rawResponse.trim().length > 0) {
+      await retryStructuredOutput()
+    }
+
     if (nodes.length === 0) {
+      console.warn(
+        `[SubAgent:${subtask.id}] No parseable PenNode output. Preview:\n${rawResponse.slice(0, 1200)}`,
+      )
       progressEntry.status = 'error'
       emitProgress(plan, progress, callbacks)
-
-      // Build a diagnostic error with a preview of what the model returned
-      let errorMsg = 'The model response could not be parsed as design nodes.'
-      if (rawResponse.trim().length === 0) {
-        errorMsg += ' The model returned an empty response.'
-      } else {
-        // Show a short snippet so the user can diagnose the issue
-        const preview = rawResponse.trim().slice(0, 150)
-        const hasJson = rawResponse.includes('{') && rawResponse.includes('"type"')
-        if (!hasJson) {
-          errorMsg += ' The response did not contain valid JSON. Model output: "' + preview + (rawResponse.length > 150 ? '…' : '') + '"'
-        } else {
-          errorMsg += ' JSON was found but contained no valid PenNode objects (need "id" and "type" fields).'
-        }
-      }
-
       return {
         subtaskId: subtask.id,
         nodes,
         rawResponse,
-        error: errorMsg,
+        prompt: userPrompt,
+        error: 'Subtask completed but returned no parseable PenNode output.',
       }
     }
 
@@ -396,13 +457,13 @@ async function executeSubAgent(
     // subtask finishes quickly (e.g. model outputs everything in one chunk).
     setTimeout(() => removeAgentIndicatorsByPrefix(subtask.idPrefix), 1500)
     emitProgress(plan, progress, callbacks)
-    return { subtaskId: subtask.id, nodes, rawResponse }
+    return { subtaskId: subtask.id, nodes, rawResponse, prompt: userPrompt }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     progressEntry.status = 'error'
     setTimeout(() => removeAgentIndicatorsByPrefix(subtask.idPrefix), 1500)
     emitProgress(plan, progress, callbacks)
-    return { subtaskId: subtask.id, nodes, rawResponse, error: msg }
+    return { subtaskId: subtask.id, nodes, rawResponse, prompt: userPrompt, error: msg }
   }
 }
 
@@ -488,6 +549,32 @@ CRITICAL LAYOUT CONSTRAINTS:
   }
 
   return prompt
+}
+
+function buildSubAgentRepairPrompt(
+  subtask: SubTask,
+  originalUserPrompt: string,
+  previousOutput: string,
+): string {
+  const previousExcerpt = previousOutput.trim().slice(0, 6000)
+
+  return `The previous response for section "${subtask.label}" was not parseable as PenNode JSON.
+
+Re-emit the SAME section as valid PenNode JSON only.
+
+STRICT RULES:
+- Start with \`\`\`json immediately.
+- Return only JSON, no explanation.
+- Each line inside the json block must be one JSON object.
+- Every node must include "id" and "type".
+- Use "_parent": null for the root frame.
+- All child nodes must reference an existing parent id.
+
+ORIGINAL SECTION REQUEST:
+${originalUserPrompt}
+
+PREVIOUS INVALID RESPONSE:
+${previousExcerpt}`
 }
 
 // ---------------------------------------------------------------------------

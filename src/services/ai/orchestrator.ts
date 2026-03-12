@@ -1,19 +1,46 @@
 /**
- * Orchestrator for parallel design generation.
+ * AI 设计生成编排器（Orchestrator）
  *
- * Flow:
- * 1. Fast "architect" API call decomposes the prompt into spatial sub-tasks
- * 2. Root frame is created on canvas
- * 3. Multiple sub-agents execute in parallel, each streaming JSONL
- * 4. Nodes are inserted to canvas in real-time with animation
- * 5. Post-generation screenshot validation (optional, requires API key)
+ * 实现并行设计生成的协调工作，将复杂的设计任务分解为多个空间子任务，
+ * 由多个子代理并行执行，提高大型设计的生成效率。
  *
- * Falls back to single-call generation on any orchestrator failure.
+ * 执行流程：
+ * 1. Planning 阶段： 快速"架构师"API 调用，将 prompt 分解为空间子任务
+ * 2. Setup 阶段: 在画布上创建根框架（root frame）
+ * 3. Generating 阶段: 多个子代理并行执行，每个代理流式输出 JSONL 格式的节点数据
+ * 4. Rendering 阶段: 节点实时插入画布，带有动画效果
+ * 5. Validation 阶段: 生成后截图验证（可选，需要 API key）
+ *
+ * 错误处理： 任何编排器失败时回退到单次调用生成
+ *
+ * 架构示意：
+ * ┌────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+ * │ 用户设计请求    │ ──> │ Planning 阶段    │ ──> │ 生成根框架      │
+ * │ AIDesignRequest │     │ 分解为子任务      │     │ 创建多个页面     │
+ * └────────────────┘     └──────────────────┘     └─────────────────┘
+ *                                                           │
+ *                         ┌───────────────────────────────────┘
+ *                         ▼
+ * ┌────────────────────────────────────────────────────────────────────────┐
+ * │                    Generating 阶段（并行执行）                           │
+ * │  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐                    │
+ * │  │ Sub-Agent 1 │   │ Sub-Agent 2 │   │ Sub-Agent N │   (并行执行)       │
+ * │  │ 流式生成节点 │   │ 流式生成节点 │   │ 流式生成节点 │                    │
+ * │  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘                    │
+ * │         │                 │                 │                            │
+ * │         └─────────────────┼─────────────────┘                            │
+ * │                           ▼                                              │
+ * │                  ┌──────────────────┐                                    │
+ * │                  │ 合并生成结果      │                                    │
+ * │                  │ adjustRootFrame  │                                    │
+ * │                  └──────────────────┘                                    │
+ * └────────────────────────────────────────────────────────────────────────┘
  */
 
 import type { PenNode, FrameNode } from '@/types/pen'
 import type {
   AIDesignRequest,
+  AITaskReportTrace,
   OrchestratorPlan,
   OrchestrationProgress,
   SubAgentResult,
@@ -43,9 +70,13 @@ import { executeSubAgents } from './orchestrator-sub-agent'
 import { emitProgress, buildFinalStepTags } from './orchestrator-progress'
 import { assignAgentIdentities } from './agent-identity'
 import { addAgentFrame, clearAgentIndicators } from '@/canvas/agent-indicator'
+import {
+  parseOrchestratorResponse as parsePlannerResponse,
+  resolveOrchestratorPlan,
+} from './orchestrator-plan-parser'
 
 // ---------------------------------------------------------------------------
-// Public API
+// 公共 API
 // ---------------------------------------------------------------------------
 
 export async function executeOrchestration(
@@ -56,7 +87,7 @@ export async function executeOrchestration(
     animated?: boolean
   },
   abortSignal?: AbortSignal,
-): Promise<{ nodes: PenNode[]; rawResponse: string }> {
+): Promise<{ nodes: PenNode[]; rawResponse: string; debugTrace: AITaskReportTrace }> {
   setGenerationContextHint(request.prompt)
   const animated = callbacks?.animated ?? false
   const preparedPrompt = prepareDesignPrompt(request.prompt)
@@ -71,8 +102,9 @@ export async function executeOrchestration(
     // -- Phase 1: Planning (streaming) --
     renderPlanningStatus('Analyzing design structure...')
 
-    const plan = await callOrchestrator(
+    const planningResult = await callOrchestrator(
       preparedPrompt.orchestratorPrompt,
+      preparedPrompt.original,
       preparedPrompt.originalLength,
       request.model,
       request.provider,
@@ -81,6 +113,7 @@ export async function executeOrchestration(
       },
       abortSignal,
     )
+    const plan = planningResult.plan
 
     // Assign ID prefixes
     for (const st of plan.subtasks) {
@@ -210,8 +243,7 @@ export async function executeOrchestration(
           width: plan.rootFrame.width,
           height: frameHeight,
           layout: plan.rootFrame.layout ?? 'vertical',
-          gap: isMobile ? (plan.rootFrame.gap || 16) : (plan.rootFrame.gap ?? 16),
-          ...(plan.rootFrame.padding != null ? { padding: plan.rootFrame.padding } : {}),
+          gap: plan.rootFrame.gap ?? 0,
           fill: defaultFill,
           children: [],
         }
@@ -256,8 +288,7 @@ export async function executeOrchestration(
         width: plan.rootFrame.width,
         height: initialHeight,
         layout: plan.rootFrame.layout ?? 'vertical',
-        gap: isMobile ? (plan.rootFrame.gap || 16) : (plan.rootFrame.gap ?? 16),
-        ...(plan.rootFrame.padding != null ? { padding: plan.rootFrame.padding } : {}),
+        gap: plan.rootFrame.gap ?? 0,
         fill: defaultFill,
         children: [],
       }
@@ -413,7 +444,36 @@ export async function executeOrchestration(
     // shows the complete pipeline progress after streaming ends
     const finalStepTags = buildFinalStepTags(plan, progress)
 
-    return { nodes: allNodes, rawResponse: finalStepTags }
+    const debugTrace: AITaskReportTrace = {
+      mode: 'design',
+      rawOutput: [
+        planningResult.rawResponse,
+        ...results.map((result) => result.rawResponse),
+      ]
+        .filter((value) => value && value.trim().length > 0)
+        .join('\n\n'),
+      parsedResult: JSON.stringify(allNodes, null, 2),
+      sections: [
+        {
+          title: 'Orchestrator Plan',
+          input: preparedPrompt.orchestratorPrompt,
+          rawOutput: planningResult.rawResponse,
+          parsedResult: JSON.stringify(planningResult.plan, null, 2),
+          ...(planningResult.usedFallback ? { error: 'Planner output was invalid JSON. Fallback plan used.' } : {}),
+        },
+        ...results.map((result) => ({
+          title: `Subtask ${result.subtaskId}`,
+          input: result.prompt,
+          rawOutput: result.rawResponse,
+          parsedResult: result.nodes.length > 0
+            ? JSON.stringify(result.nodes, null, 2)
+            : undefined,
+          error: result.error,
+        })),
+      ],
+    }
+
+    return { nodes: allNodes, rawResponse: finalStepTags, debugTrace }
   } finally {
     clearAgentIndicators()
     setGenerationContextHint('')
@@ -427,12 +487,13 @@ export async function executeOrchestration(
 
 async function callOrchestrator(
   prompt: string,
+  fallbackPrompt: string,
   timeoutHintLength: number,
   model?: string,
   provider?: AIDesignRequest['provider'],
   onThinking?: (thinking: string) => void,
   abortSignal?: AbortSignal,
-): Promise<OrchestratorPlan> {
+): Promise<{ plan: OrchestratorPlan; rawResponse: string; usedFallback: boolean }> {
   let rawResponse = ''
   let thinkingContent = ''
 
@@ -440,7 +501,7 @@ async function callOrchestrator(
     ORCHESTRATOR_PROMPT,
     [{ role: 'user', content: prompt }],
     model,
-    getOrchestratorTimeouts(timeoutHintLength, model),
+    getOrchestratorTimeouts(timeoutHintLength),
     provider,
     abortSignal,
   )) {
@@ -454,19 +515,15 @@ async function callOrchestrator(
     }
   }
 
-  const plan = parseOrchestratorResponse(rawResponse)
-  if (!plan) {
-    const preview = rawResponse.trim().slice(0, 150)
-    const hint = rawResponse.trim().length === 0
-      ? 'The model returned an empty response.'
-      : `Model output: "${preview}${rawResponse.length > 150 ? '…' : ''}"`
-    throw new Error(`Could not parse design plan from model response. ${hint}`)
+  const parsed = parsePlannerResponse(rawResponse)
+  return {
+    plan: parsed ?? resolveOrchestratorPlan(rawResponse, fallbackPrompt),
+    rawResponse,
+    usedFallback: !parsed,
   }
-
-  return plan
 }
 
-function parseOrchestratorResponse(raw: string): OrchestratorPlan | null {
+export function parseOrchestratorResponse(raw: string): OrchestratorPlan | null {
   const trimmed = raw.trim()
 
   // Try direct parse
@@ -491,7 +548,7 @@ function parseOrchestratorResponse(raw: string): OrchestratorPlan | null {
   return null
 }
 
-function tryParsePlan(text: string): OrchestratorPlan | null {
+export function tryParsePlan(text: string): OrchestratorPlan | null {
   try {
     const obj = JSON.parse(text) as Record<string, unknown>
     if (!obj.rootFrame || typeof obj.rootFrame !== 'object') return null

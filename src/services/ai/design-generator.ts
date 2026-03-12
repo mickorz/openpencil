@@ -1,13 +1,12 @@
 import type { PenNode } from '@/types/pen'
 import type { VariableDefinition, ThemedValue } from '@/types/variables'
 import type { AIProviderType } from '@/types/agent-settings'
-import type { AIDesignRequest } from './ai-types'
+import type { AIDesignRequest, AITaskReportTrace } from './ai-types'
 import { streamChat } from './ai-service'
 import { DESIGN_MODIFIER_PROMPT } from './ai-prompts'
 import { executeOrchestration } from './orchestrator'
 import { DESIGN_STREAM_TIMEOUTS } from './ai-runtime-config'
 import { extractJsonFromResponse } from './design-parser'
-import { resolveModelProfile, applyProfileToTimeouts } from './model-profiles'
 
 // ---------------------------------------------------------------------------
 // Re-exports for backward compatibility — consumers that import from
@@ -80,7 +79,7 @@ export async function generateDesign(
     animated?: boolean
   },
   abortSignal?: AbortSignal,
-): Promise<{ nodes: PenNode[]; rawResponse: string }> {
+): Promise<{ nodes: PenNode[]; rawResponse: string; debugTrace: AITaskReportTrace }> {
   return executeOrchestration(request, callbacks, abortSignal)
 }
 
@@ -98,7 +97,7 @@ export async function generateDesignModification(
     provider?: AIProviderType
   },
   abortSignal?: AbortSignal,
-): Promise<{ nodes: PenNode[]; rawResponse: string }> {
+): Promise<{ nodes: PenNode[]; rawResponse: string; debugTrace: AITaskReportTrace }> {
   // Build context from selected nodes
   const contextJson = JSON.stringify(nodesToModify, (_key, value) => {
     // omit children to avoid massive context if deep tree
@@ -116,12 +115,9 @@ export async function generateDesignModification(
   let fullResponse = ''
   let streamError: string | null = null
 
-  const profile = resolveModelProfile(options?.model)
-  const timeouts = applyProfileToTimeouts({ ...DESIGN_STREAM_TIMEOUTS }, profile)
-
   for await (const chunk of streamChat(DESIGN_MODIFIER_PROMPT, [
     { role: 'user', content: userMessage },
-  ], options?.model, timeouts, options?.provider, abortSignal)) {
+  ], options?.model, DESIGN_STREAM_TIMEOUTS, options?.provider, abortSignal)) {
     if (chunk.type === 'thinking') {
       // Ignore thinking chunks for modification -- caller already shows progress
     } else if (chunk.type === 'text') {
@@ -134,16 +130,28 @@ export async function generateDesignModification(
 
   const streamedNodes = extractJsonFromResponse(fullResponse)
   if (streamedNodes && streamedNodes.length > 0) {
-    return { nodes: streamedNodes, rawResponse: fullResponse }
+    return {
+      nodes: streamedNodes,
+      rawResponse: fullResponse,
+      debugTrace: {
+        mode: 'design-modification',
+        rawOutput: fullResponse,
+        parsedResult: JSON.stringify(streamedNodes, null, 2),
+        sections: [
+          {
+            title: 'Design Modification',
+            input: userMessage,
+            rawOutput: fullResponse,
+            parsedResult: JSON.stringify(streamedNodes, null, 2),
+          },
+        ],
+      },
+    }
   }
 
   if (streamError) {
     throw new Error(streamError)
   }
 
-  const preview = fullResponse.trim().slice(0, 150)
-  const hint = fullResponse.trim().length === 0
-    ? 'The model returned an empty response.'
-    : `Model output: "${preview}${fullResponse.length > 150 ? '…' : ''}"`
-  throw new Error(`Could not parse design nodes from model response. ${hint}`)
+  throw new Error('Failed to parse modified nodes from AI response')
 }
