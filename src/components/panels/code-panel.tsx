@@ -40,6 +40,10 @@ Rewriting rules:
 - For SwiftUI/Compose/Flutter, use idiomatic patterns (SwiftUI: adaptive stacks, Compose: adaptive layouts, Flutter: LayoutBuilder/MediaQuery).
 - Do not add functionality, interactivity, or state beyond what exists.
 - If design variables are present as var(--name), preserve them.
+- If the input HTML uses data-u-* attributes, treat it as Unity UI DSL markup.
+- Preserve data-u-name, data-u-type, data-u-dir, data-u-checked, and data-u-value.
+- Keep a single 1920x1080 root container and keep node visuals in inline style attributes.
+- Do NOT rewrite Unity UI DSL markup into class-based responsive website markup.
 
 RESPONSIVE DESIGN (CRITICAL — make the output adapt gracefully across screen sizes):
 - Convert fixed pixel widths to relative units (%, max-w-*, flex-1, w-full) where appropriate. Keep max-width constraints for readability.
@@ -121,8 +125,19 @@ export default function CodePanel() {
       case 'flutter': return generateFlutterCode(targetNodes)
       case 'react-native': return generateReactNativeCode(targetNodes)
       case 'html': {
-        const { html, css } = generateHTMLCode(targetNodes)
-        return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>Design</title>\n  <style>\n${css.split('\n').map((l) => `    ${l}`).join('\n')}\n  </style>\n</head>\n<body>\n${html.split('\n').map((l) => `  ${l}`).join('\n')}\n</body>\n</html>`
+        const rootName = targetNodes.length === 1 ? targetNodes[0].name : 'root'
+        const { html } = generateHTMLCode(targetNodes, { rootName })
+        const varsCSS = document.variables && Object.keys(document.variables).length > 0
+          ? generateCSSVariables(document).trim()
+          : ''
+        const shellCSS = [
+          'body {',
+          '  margin: 0;',
+          '  background: #f3f4f6;',
+          '}',
+          varsCSS,
+        ].filter(Boolean).join('\n\n')
+        return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>Unity UI DSL</title>\n  <style>\n${shellCSS.split('\n').map((l) => `    ${l}`).join('\n')}\n  </style>\n</head>\n<body>\n${html.split('\n').map((l) => `  ${l}`).join('\n')}\n</body>\n</html>`
       }
     }
   }, [activeTab, targetNodes, document])
