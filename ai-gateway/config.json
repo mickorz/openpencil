@@ -1,0 +1,13 @@
+{
+  "server": {
+    "port": 4000,
+    "host": "127.0.0.1"
+  },
+  "providers": {
+    "claude": { "enabled": true, "timeoutMs": 120000, "debugLog": true },
+    "codex": { "enabled": true, "timeoutMs": 900000 },
+    "opencode": { "enabled": true, "port": 4096 },
+    "copilot": { "enabled": true }
+  },
+  "logging": { "level": "info" }
+}
