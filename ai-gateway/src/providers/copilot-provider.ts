@@ -51,7 +51,7 @@ interface CopilotModel {
 /** Copilot SDK 的 CopilotClient 实例接口 */
 interface CopilotClientLike {
   start(): Promise<void>
-  stop(): Promise<void>
+  stop(): Promise<unknown>
   listModels(): Promise<CopilotModel[]>
   createSession(options: CopilotSessionOptions): Promise<CopilotSessionLike>
 }
@@ -120,9 +120,11 @@ export class CopilotProvider extends BaseProvider {
     try {
       // 动态导入 @github/copilot-sdk
       const sdk = await import('@github/copilot-sdk')
-      const CopilotClient = sdk.CopilotClient ?? sdk.default?.CopilotClient
+      // @ts-ignore - CopilotClient 导出方式因版本而异
+      const CopilotClientClass: new (opts: unknown) => CopilotClientLike =
+        sdk.CopilotClient ?? (sdk as Record<string, unknown>).CopilotClient
 
-      if (!CopilotClient) {
+      if (!CopilotClientClass) {
         return {
           connected: false,
           models: [],
@@ -131,7 +133,7 @@ export class CopilotProvider extends BaseProvider {
       }
 
       // 创建并启动客户端
-      client = new CopilotClient({ autoStart: true, cliPath }) as CopilotClientLike
+      client = new CopilotClientClass({ autoStart: true, cliPath })
       await client.start()
 
       // 获取模型列表
@@ -200,10 +202,11 @@ export class CopilotProvider extends BaseProvider {
     try {
       // 动态导入 SDK
       const sdk = await import('@github/copilot-sdk')
-      const CopilotClient = sdk.CopilotClient ?? sdk.default?.CopilotClient
+      // @ts-ignore - CopilotClient 导出方式因 SDK 版本而异
+      const CopilotClient = sdk.CopilotClient
 
       // 创建客户端
-      client = new CopilotClient({ autoStart: true, cliPath }) as CopilotClientLike
+      client = new CopilotClient({ autoStart: true, cliPath }) as unknown as CopilotClientLike
       await client.start()
 
       // 从最后一条用户消息提取 prompt
@@ -281,10 +284,11 @@ export class CopilotProvider extends BaseProvider {
     try {
       // 动态导入 SDK
       const sdk = await import('@github/copilot-sdk')
-      const CopilotClient = sdk.CopilotClient ?? sdk.default?.CopilotClient
+      // @ts-ignore - CopilotClient 导出方式因 SDK 版本而异
+      const CopilotClient = sdk.CopilotClient
 
       // 创建客户端
-      client = new CopilotClient({ autoStart: true, cliPath }) as CopilotClientLike
+      client = new CopilotClient({ autoStart: true, cliPath }) as unknown as CopilotClientLike
       await client.start()
 
       // 从最后一条用户消息提取 prompt

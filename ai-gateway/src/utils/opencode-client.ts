@@ -55,12 +55,12 @@ export async function getOpencodeClient(): Promise<{
   try {
     const client = createOpencodeClient()
     await client.config.providers() // 探测连接是否可用
-    return { client, server: undefined }
+    return { client: client as unknown as OpencodeClient, server: undefined }
   } catch {
     // 没有已运行的服务，启动临时随机端口服务
     const oc = await createOpencode({ port: 0 })
     activeServers.add(oc.server)
-    return { client: oc.client, server: oc.server }
+    return { client: oc.client as unknown as OpencodeClient, server: oc.server }
   }
 }
 
