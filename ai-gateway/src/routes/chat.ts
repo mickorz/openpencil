@@ -74,6 +74,28 @@ export async function chatRoute(app: FastifyInstance) {
     if (body.maxTurns !== undefined && (typeof body.maxTurns !== 'number' || body.maxTurns < 1 || body.maxTurns > 50)) {
       return reply.status(400).send({ error: 'Field "maxTurns" must be a number between 1 and 50' })
     }
+    // mcpServers 校验
+    if (body.mcpServers !== undefined) {
+      if (typeof body.mcpServers !== 'object' || Array.isArray(body.mcpServers)) {
+        return reply.status(400).send({ error: 'Field "mcpServers" must be an object { name: config }' })
+      }
+      const validTypes = ['stdio', 'sse', 'http']
+      for (const [name, cfg] of Object.entries(body.mcpServers as Record<string, Record<string, unknown>>)) {
+        if (!cfg || typeof cfg !== 'object') {
+          return reply.status(400).send({ error: `mcpServers["${name}"] must be an object` })
+        }
+        const t = (cfg.type as string) ?? 'stdio'
+        if (!validTypes.includes(t)) {
+          return reply.status(400).send({ error: `mcpServers["${name}"].type must be one of: ${validTypes.join(', ')}` })
+        }
+        if ((t === 'stdio' || t === undefined) && typeof cfg.command !== 'string') {
+          return reply.status(400).send({ error: `mcpServers["${name}"] (stdio) requires "command" string` })
+        }
+        if ((t === 'sse' || t === 'http') && typeof cfg.url !== 'string') {
+          return reply.status(400).send({ error: `mcpServers["${name}"] (${t}) requires "url" string` })
+        }
+      }
+    }
 
     // 查找 provider
     const provider = getProvider(body.provider)

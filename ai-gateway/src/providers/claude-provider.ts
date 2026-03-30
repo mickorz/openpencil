@@ -39,6 +39,7 @@ import {
   type ConnectResult,
   type SSEEvent,
   type ModelInfo,
+  type McpServerConfig,
 } from './base-provider.js'
 import type { ProviderConfig } from '../config.js'
 
@@ -49,6 +50,7 @@ interface SkillQueryOptions {
   outputFormat?: { type: 'json_schema'; schema: Record<string, unknown> }
   allowedTools?: string[]
   disallowedTools?: string[]
+  mcpServers?: Record<string, McpServerConfig>
 }
 import { resolveClaudeCli } from '../utils/resolve-claude-cli.js'
 import {
@@ -222,6 +224,7 @@ export class ClaudeProvider extends BaseProvider {
         ...(skillOpts.outputFormat ? { outputFormat: skillOpts.outputFormat } : {}),
         ...(skillOpts.allowedTools ? { allowedTools: skillOpts.allowedTools } : {}),
         ...(skillOpts.disallowedTools ? { disallowedTools: skillOpts.disallowedTools } : {}),
+        ...(skillOpts.mcpServers ? { mcpServers: skillOpts.mcpServers } : {}),
       }
 
       log.info('[chat] 构建 query, maxTurns:', queryOptions.maxTurns, ', includePartialMessages:', queryOptions.includePartialMessages, ', permissionMode:', queryOptions.permissionMode)
@@ -356,6 +359,7 @@ export class ClaudeProvider extends BaseProvider {
           ...(skillOpts.outputFormat ? { outputFormat: skillOpts.outputFormat } : {}),
           ...(skillOpts.allowedTools ? { allowedTools: skillOpts.allowedTools } : {}),
           ...(skillOpts.disallowedTools ? { disallowedTools: skillOpts.disallowedTools } : {}),
+        ...(skillOpts.mcpServers ? { mcpServers: skillOpts.mcpServers } : {}),
         },
       })
 
@@ -467,6 +471,12 @@ export class ClaudeProvider extends BaseProvider {
     // disallowedTools
     if (req.disallowedTools && req.disallowedTools.length > 0) {
       opts.disallowedTools = req.disallowedTools
+    }
+
+    // mcpServers - 透传给 SDK
+    if (req.mcpServers && Object.keys(req.mcpServers).length > 0) {
+      opts.mcpServers = req.mcpServers
+      log.info('[buildSkillOptions] mcpServers:', Object.keys(req.mcpServers).join(', '))
     }
 
     return opts

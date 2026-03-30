@@ -12,6 +12,15 @@ export interface SSEEvent {
   content: string
 }
 
+/**
+ * MCP Server 配置类型 - 仅支持可序列化的类型 (stdio / sse / http)
+ * 不支持 sdk 类型 (需要进程内 McpServer 实例, 不可序列化)
+ */
+export type McpServerConfig =
+  | { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: 'sse'; url: string; headers?: Record<string, string> }
+  | { type: 'http'; url: string; headers?: Record<string, string> }
+
 export interface ConnectResult {
   connected: boolean
   models: ModelInfo[]
@@ -53,6 +62,8 @@ export interface ChatRequest {
   disallowedTools?: string[]
   /** 最大对话轮数, 默认 chat文本模式1 / chat图片模式3 / generate1 */
   maxTurns?: number
+  /** MCP Server 配置, 透传给 SDK query() */
+  mcpServers?: Record<string, McpServerConfig>
 }
 
 export type GenerateRequest = ChatRequest
