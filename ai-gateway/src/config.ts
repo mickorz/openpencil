@@ -11,6 +11,8 @@ export interface ProviderConfig {
   timeoutMs?: number
   debugLog?: boolean
   port?: number
+  /** cwd 允许的基础目录白名单 */
+  allowedCwdDirs?: string[]
 }
 
 export interface LoggingConfig {

@@ -41,18 +41,48 @@ import {
   type ModelInfo,
 } from './base-provider.js'
 import type { ProviderConfig } from '../config.js'
+
+interface SkillQueryOptions {
+  cwd?: string
+  settingSources?: Array<'user' | 'project' | 'local'>
+  plugins?: Array<{ type: 'local'; path: string }>
+  outputFormat?: { type: 'json_schema'; schema: Record<string, unknown> }
+  allowedTools?: string[]
+  disallowedTools?: string[]
+}
 import { resolveClaudeCli } from '../utils/resolve-claude-cli.js'
 import {
   buildClaudeAgentEnv,
   getClaudeAgentDebugFilePath,
 } from '../utils/resolve-claude-agent-env.js'
 import { saveAttachmentsToTempFiles, cleanupDir } from '../utils/temp-files.js'
+import { validateCwd } from '../utils/validate-cwd.js'
+
+const log = {
+  info: (...args: unknown[]) => console.log('[ClaudeProvider]', ...args),
+  warn: (...args: unknown[]) => console.warn('[ClaudeProvider]', ...args),
+  error: (...args: unknown[]) => console.error('[ClaudeProvider]', ...args),
+}
 
 export class ClaudeProvider extends BaseProvider {
   readonly name = 'claude'
 
   constructor(config: ProviderConfig) {
     super(config)
+  }
+
+  /**
+   * 前置校验请求参数
+   * cwd 不在白名单时直接抛错, 路由层在 SSE 流之前拦截
+   */
+  override validateRequest(req: Partial<ChatRequest>): void {
+    if (req.cwd) {
+      const allowedDirs = this.config.allowedCwdDirs ?? []
+      const validated = validateCwd(req.cwd, allowedDirs)
+      if (!validated) {
+        throw new Error(`cwd "${req.cwd}" 不在允许的目录白名单中. 允许的目录: [${allowedDirs.join(', ')}]`)
+      }
+    }
   }
 
   /**
@@ -66,8 +96,10 @@ export class ClaudeProvider extends BaseProvider {
    * 5. 映射为 ModelInfo[]（provider 设为 'anthropic'）
    */
   async connect(): Promise<ConnectResult> {
+    log.info('[connect] 开始检测 Claude Code CLI...')
     const claudePath = resolveClaudeCli()
     if (!claudePath) {
+      log.warn('[connect] Claude Code CLI 未找到')
       return {
         connected: false,
         models: [],
@@ -76,17 +108,22 @@ export class ClaudeProvider extends BaseProvider {
       }
     }
 
+    log.info('[connect] CLI 路径:', claudePath)
+
     try {
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
       const env = buildClaudeAgentEnv()
       const debugFile = getClaudeAgentDebugFilePath()
 
+      log.info('[connect] 构建 query, debugFile:', debugFile ?? '(无)')
+
       const q = query({
         prompt: '',
         options: {
           maxTurns: 1,
-          tools: [],
-          permissionMode: 'plan',
+          // 不传 tools 或传 undefined, SDK 使用默认内置工具集 (Read, Glob, Bash 等)
+        // tools: [],  // 空数组会禁用所有工具
+          permissionMode: 'plan' as const,
           persistSession: false,
           env,
           ...(debugFile ? { debugFile } : {}),
@@ -94,6 +131,7 @@ export class ClaudeProvider extends BaseProvider {
         },
       })
 
+      log.info('[connect] 请求模型列表...')
       const raw = await q.supportedModels()
       q.close()
 
@@ -104,9 +142,11 @@ export class ClaudeProvider extends BaseProvider {
         provider: 'anthropic',
       }))
 
+      log.info('[connect] 获取到模型列表, 数量:', models.length, models.map(m => m.value).join(', '))
       return { connected: true, models }
     } catch (error) {
       const raw = error instanceof Error ? error.message : 'Failed to connect'
+      log.error('[connect] 连接失败:', raw)
       return {
         connected: false,
         models: [],
@@ -123,6 +163,9 @@ export class ClaudeProvider extends BaseProvider {
    * - 文本模式 (无 attachments): includePartialMessages=true，流式 yield content_block_delta
    */
   async *chat(req: ChatRequest, model?: string): AsyncGenerator<SSEEvent> {
+    const startTime = Date.now()
+    log.info('[chat] 开始流式聊天请求, model:', model ?? '(默认)')
+
     const claudePath = resolveClaudeCli()
     const env = buildClaudeAgentEnv()
     const debugFile = getClaudeAgentDebugFilePath()
@@ -135,11 +178,15 @@ export class ClaudeProvider extends BaseProvider {
     const hasImages = attachments.length > 0
     let attachTempDir: string | undefined
 
+    log.info('[chat] 消息数:', req.messages.length, ', 附件数:', attachments.length, ', 图片模式:', hasImages)
+    log.info('[chat] prompt 长度:', prompt.length, ', effort:', req.effort ?? '(默认)', ', thinkingMode:', req.thinkingMode ?? '(默认)')
+
     try {
       // 图片模式：保存附件到项目目录内，供 Claude Code 的 Read 工具读取
       if (hasImages) {
         const saved = await saveAttachmentsToTempFiles(attachments, true)
         attachTempDir = saved.tempDir
+        log.info('[chat] 保存附件到临时目录:', attachTempDir, ', 文件数:', saved.files.length)
         const imageRefs = saved.files
           .map((f) => `First, use the Read tool to read the image file at "${f}". Then analyze it.`)
           .join('\n')
@@ -150,34 +197,50 @@ export class ClaudeProvider extends BaseProvider {
       const systemPrompt = hasImages ? this.stripNoTools(req.system) : req.system
       const thinking = this.getThinkingConfig(req)
 
-      const { query } = await import('@anthropic-ai/claude-agent-sdk')
-      const q = query({
-        prompt,
-        options: {
-          systemPrompt,
-          ...(model ? { model } : {}),
-          maxTurns: hasImages ? 3 : 1,
-          includePartialMessages: !hasImages,
-          tools: [],
-          plugins: [],
-          permissionMode: 'plan',
-          persistSession: false,
-          ...(req.effort ? { effort: req.effort } : {}),
-          ...(thinking ? { thinking } : {}),
-          env,
-          ...(debugFile ? { debugFile } : {}),
-          ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
-        },
-      })
+      const skillOpts = this.buildSkillOptions(req)
 
+      const { query } = await import('@anthropic-ai/claude-agent-sdk')
+      const queryOptions = {
+        systemPrompt,
+        ...(model ? { model } : {}),
+        maxTurns: req.maxTurns ?? (hasImages ? 3 : 1),
+        includePartialMessages: !hasImages,
+        // 不传 tools 或传 undefined, SDK 使用默认内置工具集 (Read, Glob, Bash 等)
+        // tools: [],  // 空数组会禁用所有工具
+        plugins: skillOpts.plugins ?? [],
+        permissionMode: req.permissionMode ?? 'plan',
+        ...(req.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
+        persistSession: false,
+        ...(req.effort ? { effort: req.effort } : {}),
+        ...(thinking ? { thinking } : {}),
+        env,
+        ...(debugFile ? { debugFile } : {}),
+        ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
+        // skill 相关参数
+        ...(skillOpts.cwd ? { cwd: skillOpts.cwd } : {}),
+        ...(skillOpts.settingSources ? { settingSources: skillOpts.settingSources } : {}),
+        ...(skillOpts.outputFormat ? { outputFormat: skillOpts.outputFormat } : {}),
+        ...(skillOpts.allowedTools ? { allowedTools: skillOpts.allowedTools } : {}),
+        ...(skillOpts.disallowedTools ? { disallowedTools: skillOpts.disallowedTools } : {}),
+      }
+
+      log.info('[chat] 构建 query, maxTurns:', queryOptions.maxTurns, ', includePartialMessages:', queryOptions.includePartialMessages, ', permissionMode:', queryOptions.permissionMode)
+      log.info('[chat] 发送请求, prompt 前100字符:', prompt.substring(0, 100))
+
+      const q = query({ prompt, options: queryOptions })
+
+      let eventCount = 0
       try {
         for await (const message of q) {
+          eventCount++
           if (hasImages) {
             // 图片模式：只等待 result 事件
             if (message.type === 'result') {
+              log.info('[chat] 图片模式收到 result, subtype:', message.subtype)
               const isErrorResult = 'is_error' in message && Boolean((message as { is_error?: boolean }).is_error)
               if (message.subtype === 'success' && !isErrorResult) {
                 const text = (message as { result?: string }).result ?? ''
+                log.info('[chat] 图片模式完整响应:', text)
                 if (text) {
                   yield { type: 'text', content: text }
                 }
@@ -185,6 +248,7 @@ export class ClaudeProvider extends BaseProvider {
                 const errors = 'errors' in message ? (message.errors as string[]) : []
                 const resultText = 'result' in message ? String((message as { result?: string }).result ?? '') : ''
                 const content = errors.join('; ') || resultText || `Query ended with: ${message.subtype}`
+                log.warn('[chat] 图片模式错误:', content)
                 yield { type: 'error', content }
               }
             }
@@ -194,9 +258,13 @@ export class ClaudeProvider extends BaseProvider {
               const ev = (message as { event: { type: string; delta: { type: string; text?: string; thinking?: string } } }).event
               if (ev.type === 'content_block_delta') {
                 if (ev.delta.type === 'text_delta') {
-                  yield { type: 'text', content: ev.delta.text ?? '' }
+                  const deltaText = ev.delta.text ?? ''
+                  log.info('[chat] 流式 delta (text_delta):', deltaText)
+                  yield { type: 'text', content: deltaText }
                 } else if (ev.delta.type === 'thinking_delta') {
-                  yield { type: 'thinking', content: (ev.delta as { thinking?: string }).thinking ?? '' }
+                  const thinkingText = (ev.delta as { thinking?: string }).thinking ?? ''
+                  log.info('[chat] 流式 delta (thinking_delta):', thinkingText)
+                  yield { type: 'thinking', content: thinkingText }
                 }
               }
             } else if (message.type === 'result') {
@@ -205,6 +273,7 @@ export class ClaudeProvider extends BaseProvider {
                 const errors = 'errors' in message ? (message.errors as string[]) : []
                 const resultText = 'result' in message ? String((message as { result?: string }).result ?? '') : ''
                 const content = errors.join('; ') || resultText || `Query ended with: ${message.subtype}`
+                log.warn('[chat] 文本模式 result 错误:', content)
                 yield { type: 'error', content }
               }
             }
@@ -214,8 +283,12 @@ export class ClaudeProvider extends BaseProvider {
         q.close()
       }
 
+      const elapsed = Date.now() - startTime
+      log.info('[chat] 流式聊天完成, 总事件数:', eventCount, ', 耗时:', elapsed, 'ms')
       yield { type: 'done', content: '' }
     } catch (error) {
+      const elapsed = Date.now() - startTime
+      log.error('[chat] 流式聊天异常, 耗时:', elapsed, 'ms, 错误:', error instanceof Error ? error.message : error)
       yield {
         type: 'error',
         content: error instanceof Error ? error.message : 'Unknown error',
@@ -223,6 +296,7 @@ export class ClaudeProvider extends BaseProvider {
     } finally {
       // 清理临时文件
       if (attachTempDir) {
+        log.info('[chat] 清理临时目录:', attachTempDir)
         await cleanupDir(attachTempDir).catch(() => {})
       }
     }
@@ -242,51 +316,81 @@ export class ClaudeProvider extends BaseProvider {
     req: ChatRequest,
     model?: string,
   ): Promise<{ text?: string; error?: string }> {
+    const startTime = Date.now()
+    log.info('[generate] 开始非流式生成请求, model:', model ?? '(默认)')
+
     const claudePath = resolveClaudeCli()
     const env = buildClaudeAgentEnv()
     const debugFile = getClaudeAgentDebugFilePath()
     const thinking = this.getThinkingConfig(req)
 
     try {
+      const skillOpts = this.buildSkillOptions(req)
+
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
       const lastUserMsg = [...req.messages].reverse().find((m) => m.role === 'user')
+      const prompt = lastUserMsg?.content ?? ''
+
+      log.info('[generate] 消息数:', req.messages.length, ', prompt 长度:', prompt.length)
 
       const q = query({
-        prompt: lastUserMsg?.content ?? '',
+        prompt,
         options: {
           systemPrompt: req.system,
           ...(model ? { model } : {}),
-          maxTurns: 1,
-          tools: [],
-          plugins: [],
-          permissionMode: 'plan',
+          maxTurns: req.maxTurns ?? 1,
+          // 不传 tools 或传 undefined, SDK 使用默认内置工具集 (Read, Glob, Bash 等)
+        // tools: [],  // 空数组会禁用所有工具
+          plugins: skillOpts.plugins ?? [],
+          permissionMode: req.permissionMode ?? 'plan',
+          ...(req.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
           persistSession: false,
           ...(req.effort ? { effort: req.effort } : {}),
           ...(thinking ? { thinking } : {}),
           env,
           ...(debugFile ? { debugFile } : {}),
           ...(claudePath ? { pathToClaudeCodeExecutable: claudePath } : {}),
+          // skill 相关参数
+          ...(skillOpts.cwd ? { cwd: skillOpts.cwd } : {}),
+          ...(skillOpts.settingSources ? { settingSources: skillOpts.settingSources } : {}),
+          ...(skillOpts.outputFormat ? { outputFormat: skillOpts.outputFormat } : {}),
+          ...(skillOpts.allowedTools ? { allowedTools: skillOpts.allowedTools } : {}),
+          ...(skillOpts.disallowedTools ? { disallowedTools: skillOpts.disallowedTools } : {}),
         },
       })
 
+      let messageCount = 0
       try {
         for await (const message of q) {
+          messageCount++
           if (message.type === 'result') {
             const isErrorResult = 'is_error' in message && Boolean((message as { is_error?: boolean }).is_error)
             if (message.subtype === 'success' && !isErrorResult) {
-              return { text: (message as { result?: string }).result ?? '' }
+              const text = (message as { result?: string }).result ?? ''
+              const elapsed = Date.now() - startTime
+              log.info('[generate] 生成成功, 消息数:', messageCount, ', 耗时:', elapsed, 'ms')
+              log.info('[generate] 完整响应内容:', text)
+              return { text }
             }
             const errors = 'errors' in message ? (message.errors as string[]) : []
             const resultText = 'result' in message ? String((message as { result?: string }).result ?? '') : ''
-            return { error: errors.join('; ') || resultText || 'Query failed' }
+            const errMsg = errors.join('; ') || resultText || 'Query failed'
+            const elapsed = Date.now() - startTime
+            log.error('[generate] 生成失败, 耗时:', elapsed, 'ms')
+            log.error('[generate] 完整错误响应:', errMsg)
+            return { error: errMsg }
           }
         }
       } finally {
         q.close()
       }
 
+      const elapsed = Date.now() - startTime
+      log.warn('[generate] 未收到 result 事件, 消息数:', messageCount, ', 耗时:', elapsed, 'ms')
       return { error: 'No result received from Claude Agent SDK' }
     } catch (error) {
+      const elapsed = Date.now() - startTime
+      log.error('[generate] 生成异常, 耗时:', elapsed, 'ms, 错误:', error instanceof Error ? error.message : error)
       return {
         error: error instanceof Error ? error.message : 'Unknown error',
       }
@@ -319,6 +423,53 @@ export class ClaudeProvider extends BaseProvider {
     return prompt
       .replace(/^.*NEVER use tools.*$/gim, '')
       .replace(/\n{3,}/g, '\n\n')
+  }
+
+  /**
+   * 从请求中构建 skill 相关的 query 选项
+   * 统一处理 cwd / settingSources / plugins / outputFormat / allowedTools / disallowedTools
+   */
+  private buildSkillOptions(req: ChatRequest): SkillQueryOptions {
+    const opts: SkillQueryOptions = {}
+
+    // cwd - 安全校验后透传, 不在白名单则直接报错
+    if (req.cwd) {
+      const allowedDirs = this.config.allowedCwdDirs ?? []
+      const validatedCwd = validateCwd(req.cwd, allowedDirs)
+      if (validatedCwd) {
+        opts.cwd = validatedCwd
+        log.info('[buildSkillOptions] cwd 已校验通过:', validatedCwd)
+      } else {
+        throw new Error(`cwd "${req.cwd}" 不在允许的目录白名单中. 允许的目录: [${allowedDirs.join(', ')}]`)
+      }
+    }
+
+    // settingSources
+    if (req.settingSources && req.settingSources.length > 0) {
+      opts.settingSources = req.settingSources
+    }
+
+    // plugins
+    if (req.plugins && req.plugins.length > 0) {
+      opts.plugins = req.plugins
+    }
+
+    // outputFormat
+    if (req.outputFormat) {
+      opts.outputFormat = req.outputFormat
+    }
+
+    // allowedTools
+    if (req.allowedTools && req.allowedTools.length > 0) {
+      opts.allowedTools = req.allowedTools
+    }
+
+    // disallowedTools
+    if (req.disallowedTools && req.disallowedTools.length > 0) {
+      opts.disallowedTools = req.disallowedTools
+    }
+
+    return opts
   }
 
   /**

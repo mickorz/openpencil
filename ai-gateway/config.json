@@ -4,7 +4,7 @@
     "host": "127.0.0.1"
   },
   "providers": {
-    "claude": { "enabled": true, "timeoutMs": 120000, "debugLog": true },
+    "claude": { "enabled": true, "timeoutMs": 120000, "debugLog": true, "allowedCwdDirs": ["D:\\NodejsP\\PencilUnity\\openpencil", "D:\\NodejsP\\PencilUnity"] },
     "codex": { "enabled": true, "timeoutMs": 900000 },
     "opencode": { "enabled": true, "port": 4096 },
     "copilot": { "enabled": true }
