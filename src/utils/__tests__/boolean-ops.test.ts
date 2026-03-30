@@ -1,9 +1,78 @@
-import { describe, it, expect } from 'vitest'
-import {
-  canBooleanOp,
-  executeBooleanOp,
-} from '../boolean-ops'
+// @vitest-environment jsdom
+
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { PenNode, RectangleNode, EllipseNode, PathNode, PolygonNode } from '@/types/pen'
+
+let canBooleanOp: typeof import('../boolean-ops').canBooleanOp
+let executeBooleanOp: typeof import('../boolean-ops').executeBooleanOp
+
+function createMockCanvasContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+  const baseContext: Record<string, unknown> = {
+    canvas,
+    fillStyle: '#000000',
+    strokeStyle: '#000000',
+    globalAlpha: 1,
+    globalCompositeOperation: 'source-over',
+    save: vi.fn(),
+    restore: vi.fn(),
+    clearRect: vi.fn(),
+    fillRect: vi.fn(),
+    strokeRect: vi.fn(),
+    beginPath: vi.fn(),
+    closePath: vi.fn(),
+    moveTo: vi.fn(),
+    lineTo: vi.fn(),
+    bezierCurveTo: vi.fn(),
+    quadraticCurveTo: vi.fn(),
+    arc: vi.fn(),
+    rect: vi.fn(),
+    clip: vi.fn(),
+    translate: vi.fn(),
+    scale: vi.fn(),
+    rotate: vi.fn(),
+    transform: vi.fn(),
+    setTransform: vi.fn(),
+    drawImage: vi.fn(),
+    fill: vi.fn(),
+    stroke: vi.fn(),
+    measureText: vi.fn(() => ({ width: 0 })),
+    getImageData: vi.fn(() => ({
+      data: new Uint8ClampedArray([170, 0, 0, 255]),
+      width: 1,
+      height: 1,
+    })),
+    putImageData: vi.fn(),
+    createImageData: vi.fn(() => ({
+      data: new Uint8ClampedArray(4),
+      width: 1,
+      height: 1,
+    })),
+  }
+
+  return new Proxy(baseContext, {
+    get(target, prop) {
+      if (!(prop in target)) {
+        target[prop as string] = vi.fn()
+      }
+      return target[prop as string]
+    },
+  }) as unknown as CanvasRenderingContext2D
+}
+
+beforeAll(async () => {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function mockGetContext(this: HTMLCanvasElement, contextId: string) {
+    if (contextId !== '2d') return null
+    return createMockCanvasContext(this)
+  })
+
+  const booleanOps = await import('../boolean-ops')
+  canBooleanOp = booleanOps.canBooleanOp
+  executeBooleanOp = booleanOps.executeBooleanOp
+})
+
+afterAll(() => {
+  vi.restoreAllMocks()
+})
 
 function makeRect(
   id: string,

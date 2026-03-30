@@ -1,5 +1,4 @@
 import type { PenNode, ContainerProps } from '@/types/pen'
-import { isBadgeOverlayNode } from '@/services/ai/design-node-sanitization'
 import { useDocumentStore, DEFAULT_FRAME_ID } from '@/stores/document-store'
 import {
   parseSizing,
@@ -264,12 +263,6 @@ export function computeLayoutPositions(
   const layout = c.layout || inferLayout(parent)
   if (!layout || layout === 'none') return visibleChildren
 
-  // Separate badge/overlay nodes from layout children — badges use absolute
-  // positioning and should not participate in the layout flow.
-  const badgeNodes = visibleChildren.filter(isBadgeOverlayNode)
-  const layoutChildren = visibleChildren.filter((ch) => !isBadgeOverlayNode(ch))
-  if (layoutChildren.length === 0) return visibleChildren
-
   const pW = parseSizing(c.width)
   const pH = parseSizing(c.height)
   // When parent has no explicit dimensions (fit_content), resolve actual size
@@ -286,10 +279,10 @@ export function computeLayoutPositions(
   const availW = parentW - pad.left - pad.right
   const availH = parentH - pad.top - pad.bottom
   const availMain = isVertical ? availH : availW
-  const totalGapSpace = gap * Math.max(0, layoutChildren.length - 1)
+  const totalGapSpace = gap * Math.max(0, visibleChildren.length - 1)
 
   // Two-pass sizing: first compute fixed sizes, then allocate remaining space for fill children
-  const mainSizing = layoutChildren.map((ch) => {
+  const mainSizing = visibleChildren.map((ch) => {
     const prop = isVertical ? 'height' : 'width'
     if (prop in ch) {
       const s = parseSizing((ch as any)[prop])
@@ -305,7 +298,7 @@ export function computeLayoutPositions(
   const remainingMain = Math.max(0, availMain - fixedTotal - totalGapSpace)
   const fillSize = fillCount > 0 ? remainingMain / fillCount : 0
 
-  const sizes = layoutChildren.map((ch, i) => {
+  const sizes = visibleChildren.map((ch, i) => {
     let mainSize = mainSizing[i] === 'fill' ? fillSize : (mainSizing[i] as number)
     // For single-line text in vertical layouts, use Fabric's actual rendered
     // height (fontSize * 1.13) instead of fontSize * lineHeight.  This ensures
@@ -341,14 +334,14 @@ export function computeLayoutPositions(
       break
     case 'space_between':
       effectiveGap =
-        layoutChildren.length > 1
-          ? (availMain - totalMain) / (layoutChildren.length - 1)
+        visibleChildren.length > 1
+          ? (availMain - totalMain) / (visibleChildren.length - 1)
           : 0
       break
     case 'space_around': {
       const spacing =
-        layoutChildren.length > 0
-          ? (availMain - totalMain) / layoutChildren.length
+        visibleChildren.length > 0
+          ? (availMain - totalMain) / visibleChildren.length
           : 0
       mainPos = spacing / 2
       effectiveGap = spacing
@@ -359,7 +352,7 @@ export function computeLayoutPositions(
       break
   }
 
-  const positioned = layoutChildren.map((child, i) => {
+  return visibleChildren.map((child, i) => {
     const size = sizes[i]
     const crossAvail = isVertical ? availW : availH
     const childCross = isVertical ? size.w : size.h
@@ -437,14 +430,6 @@ export function computeLayoutPositions(
 
     return out as unknown as PenNode
   })
-
-  // Prepend badge/overlay nodes (they keep original x/y for absolute positioning).
-  // flattenNodes iterates in REVERSE, so index 0 = frontmost z-order.
-  // Badges at the beginning render on top of layout children.
-  if (badgeNodes.length > 0) {
-    return [...badgeNodes, ...positioned]
-  }
-  return positioned
 }
 
 function normalizeJustifyContent(

@@ -11,7 +11,7 @@ export const PORT_FILE_DIR_NAME = '.openpencil'
 export const PORT_FILE_NAME = '.port'
 
 // Dev server
-export const VITE_DEV_PORT = 3000
+export const VITE_DEV_PORT = 7864
 
 // Window defaults
 export const WINDOW_WIDTH = 1440

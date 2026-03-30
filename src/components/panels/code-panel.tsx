@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
-import { Copy, Check, Sparkles, Loader2, RotateCcw, Download, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Copy, Check, Sparkles, Loader2, RotateCcw, Download, ChevronLeft, ChevronRight, FileJson, FileCode2, Send } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
@@ -17,10 +17,13 @@ import { generateComposeCode } from '@/services/codegen/compose-generator'
 import { generateFlutterCode } from '@/services/codegen/flutter-generator'
 import { generateReactNativeCode } from '@/services/codegen/react-native-generator'
 import { generateCSSVariables } from '@/services/codegen/css-variables-generator'
+import { bakeHTMLToJSON } from '@/services/codegen/html-to-json-baker'
+import { sendJsonToUnity } from '@/services/codegen/unity-bake-client'
 import { highlightCode } from '@/utils/syntax-highlight'
 import type { PenNode } from '@/types/pen'
 
 type CodeTab = 'react' | 'vue' | 'svelte' | 'html' | 'swiftui' | 'compose' | 'flutter' | 'react-native' | 'css-vars'
+type HTMLExportScope = 'document' | 'selection'
 
 const ENHANCE_SYSTEM_PROMPT = `You are a code rewriter. You receive auto-generated UI code and rewrite it to be idiomatic, production-ready, and RESPONSIVE.
 
@@ -90,6 +93,12 @@ function cleanEnhancedResult(raw: string): string {
 export default function CodePanel() {
   const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<CodeTab>('react')
+  const [htmlExportScope, setHtmlExportScope] = useState<HTMLExportScope>('document')
+  const [htmlOutputMode, setHtmlOutputMode] = useState<'html' | 'json'>('html')
+  const [bakedJsonCode, setBakedJsonCode] = useState('')
+  const [isBakingJson, setIsBakingJson] = useState(false)
+  const [isSendingToUnity, setIsSendingToUnity] = useState(false)
+  const [bakeMessage, setBakeMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [enhancedCode, setEnhancedCode] = useState<Record<string, string>>({})
   const [isEnhancing, setIsEnhancing] = useState(false)
@@ -113,6 +122,41 @@ export default function CodePanel() {
   }, [selectedIds, children, getNodeById])
 
   const document = useDocumentStore((s) => s.document)
+  const hasSelectedNodes = selectedIds.length > 0
+
+  const htmlTargetNodes: PenNode[] = useMemo(() => {
+    if (htmlExportScope === 'selection' && hasSelectedNodes) {
+      return targetNodes
+    }
+    return children
+  }, [htmlExportScope, hasSelectedNodes, targetNodes, children])
+
+  const htmlScopeText = useMemo(() => {
+    if (htmlExportScope === 'selection' && hasSelectedNodes) {
+      return `已选中 ${selectedIds.length} 个节点`
+    }
+    return '整个页面'
+  }, [htmlExportScope, hasSelectedNodes, selectedIds.length])
+
+  const htmlScopeShortLabel = htmlExportScope === 'selection' && hasSelectedNodes
+    ? '选中'
+    : '整页'
+
+  const generatedHtmlCode = useMemo(() => {
+    const rootName = htmlTargetNodes.length === 1 ? htmlTargetNodes[0].name : 'root'
+    const { html } = generateHTMLCode(htmlTargetNodes, { rootName })
+    const varsCSS = document.variables && Object.keys(document.variables).length > 0
+      ? generateCSSVariables(document).trim()
+      : ''
+    const shellCSS = [
+      'body {',
+      '  margin: 0;',
+      '  background: #f3f4f6;',
+      '}',
+      varsCSS,
+    ].filter(Boolean).join('\n\n')
+    return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>Unity UI DSL</title>\n  <style>\n${shellCSS.split('\n').map((l) => `    ${l}`).join('\n')}\n  </style>\n</head>\n<body>\n${html.split('\n').map((l) => `  ${l}`).join('\n')}\n</body>\n</html>`
+  }, [htmlTargetNodes, document])
 
   const generatedCode = useMemo(() => {
     switch (activeTab) {
@@ -124,26 +168,19 @@ export default function CodePanel() {
       case 'compose': return generateComposeCode(targetNodes)
       case 'flutter': return generateFlutterCode(targetNodes)
       case 'react-native': return generateReactNativeCode(targetNodes)
-      case 'html': {
-        const rootName = targetNodes.length === 1 ? targetNodes[0].name : 'root'
-        const { html } = generateHTMLCode(targetNodes, { rootName })
-        const varsCSS = document.variables && Object.keys(document.variables).length > 0
-          ? generateCSSVariables(document).trim()
-          : ''
-        const shellCSS = [
-          'body {',
-          '  margin: 0;',
-          '  background: #f3f4f6;',
-          '}',
-          varsCSS,
-        ].filter(Boolean).join('\n\n')
-        return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>Unity UI DSL</title>\n  <style>\n${shellCSS.split('\n').map((l) => `    ${l}`).join('\n')}\n  </style>\n</head>\n<body>\n${html.split('\n').map((l) => `  ${l}`).join('\n')}\n</body>\n</html>`
-      }
+      case 'html': return generatedHtmlCode
     }
-  }, [activeTab, targetNodes, document])
+  }, [activeTab, targetNodes, document, generatedHtmlCode])
+
+  const htmlSourceCode = enhancedCode.html ?? generatedHtmlCode
 
   // Use enhanced code if available for this tab, otherwise the generated code
-  const displayCode = enhancedCode[activeTab] ?? generatedCode
+  const displayCode = useMemo(() => {
+    if (activeTab === 'html') {
+      return htmlOutputMode === 'json' ? bakedJsonCode : htmlSourceCode
+    }
+    return enhancedCode[activeTab] ?? generatedCode
+  }, [activeTab, htmlOutputMode, bakedJsonCode, htmlSourceCode, enhancedCode, generatedCode])
 
   const highlightedHTML = useMemo(() => {
     const langMap: Record<CodeTab, Parameters<typeof highlightCode>[1]> = {
@@ -156,6 +193,9 @@ export default function CodePanel() {
       'react-native': 'jsx',
       'css-vars': 'css',
       html: 'html',
+    }
+    if (activeTab === 'html' && htmlOutputMode === 'json') {
+      return highlightCode(displayCode, 'json')
     }
     // HTML / Vue / Svelte: split at <style to highlight CSS portion separately
     if (activeTab === 'html' || activeTab === 'vue' || activeTab === 'svelte') {
@@ -184,7 +224,7 @@ export default function CodePanel() {
       }
     }
     return highlightCode(displayCode, langMap[activeTab])
-  }, [activeTab, displayCode])
+  }, [activeTab, displayCode, htmlOutputMode])
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(displayCode).then(() => {
@@ -206,7 +246,7 @@ export default function CodePanel() {
       'react-native': 'tsx',
       'css-vars': 'css',
     }
-    const ext = extMap[activeTab]
+    const ext = activeTab === 'html' && htmlOutputMode === 'json' ? 'json' : extMap[activeTab]
     const blob = new Blob([displayCode], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = globalThis.document.createElement('a')
@@ -218,8 +258,57 @@ export default function CodePanel() {
 
   const hasAI = useAIStore((s) => s.availableModels.length > 0)
 
+  const handleBakeJSON = useCallback(async () => {
+    if (htmlOutputMode === 'json') {
+      setHtmlOutputMode('html')
+      setBakeMessage(null)
+      return
+    }
+
+    setIsBakingJson(true)
+    try {
+      const result = await bakeHTMLToJSON(htmlSourceCode)
+      setBakedJsonCode(JSON.stringify(result.root, null, 2))
+      setHtmlOutputMode('json')
+      setBakeMessage({
+        kind: 'success',
+        text: result.warnings.length > 0
+          ? `JSON 已生成，范围：${htmlScopeText}，检查提示 ${result.warnings.length} 项`
+          : `JSON 已生成，范围：${htmlScopeText}`,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'HTML 转 JSON 失败'
+      setBakeMessage({ kind: 'error', text: message })
+      setHtmlOutputMode('html')
+      setBakedJsonCode('')
+    } finally {
+      setIsBakingJson(false)
+    }
+  }, [htmlOutputMode, htmlScopeText, htmlSourceCode])
+
+  const handleSendToUnity = useCallback(async () => {
+    if (!bakedJsonCode.trim() || isSendingToUnity) return
+
+    setIsSendingToUnity(true)
+    try {
+      const result = await sendJsonToUnity(bakedJsonCode)
+      const locationText = [result.canvasName, result.rootName].filter(Boolean).join(' / ')
+      setBakeMessage({
+        kind: 'success',
+        text: locationText
+          ? `已发送到 Unity: ${locationText}`
+          : (result.message || '已发送到 Unity'),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '发送到 Unity 失败'
+      setBakeMessage({ kind: 'error', text: message })
+    } finally {
+      setIsSendingToUnity(false)
+    }
+  }, [bakedJsonCode, isSendingToUnity])
+
   const handleEnhance = useCallback(async () => {
-    if (isEnhancing || activeTab === 'css-vars') return
+    if (isEnhancing || activeTab === 'css-vars' || (activeTab === 'html' && htmlOutputMode === 'json')) return
 
     const model = useAIStore.getState().model
     const modelGroups = useAIStore.getState().modelGroups
@@ -233,9 +322,11 @@ export default function CodePanel() {
     const abortController = new AbortController()
     enhanceAbortRef.current = abortController
 
+    const activeNodes = activeTab === 'html' ? htmlTargetNodes : targetNodes
+
     // Build a compact node summary for context
     const nodesSummary = JSON.stringify(
-      targetNodes.map((n) => {
+      activeNodes.map((n) => {
         const base: Record<string, unknown> = { type: n.type, name: n.name }
         if ('width' in n) base.width = n.width
         if ('height' in n) base.height = n.height
@@ -288,7 +379,7 @@ ${generatedCode}`
       setIsEnhancing(false)
       enhanceAbortRef.current = null
     }
-  }, [isEnhancing, activeTab, generatedCode, targetNodes])
+  }, [isEnhancing, activeTab, generatedCode, htmlOutputMode, htmlTargetNodes, targetNodes])
 
   const handleCancelEnhance = useCallback(() => {
     enhanceAbortRef.current?.abort()
@@ -307,6 +398,27 @@ ${generatedCode}`
   useEffect(() => {
     setEnhancedCode({})
   }, [targetNodes])
+
+  useEffect(() => {
+    if (!hasSelectedNodes && htmlExportScope === 'selection') {
+      setHtmlExportScope('document')
+    }
+  }, [hasSelectedNodes, htmlExportScope])
+
+  useEffect(() => {
+    setEnhancedCode((prev) => {
+      if (!prev.html) return prev
+      const next = { ...prev }
+      delete next.html
+      return next
+    })
+  }, [htmlExportScope, htmlTargetNodes])
+
+  useEffect(() => {
+    setHtmlOutputMode('html')
+    setBakedJsonCode('')
+    setBakeMessage(null)
+  }, [htmlSourceCode])
 
   useEffect(() => {
     return () => {
@@ -387,7 +499,77 @@ ${generatedCode}`
           </button>
         )}
         <div className="flex items-center gap-0.5 shrink-0">
-          {hasAI && activeTab !== 'css-vars' && (
+          {activeTab === 'html' && hasSelectedNodes && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setHtmlExportScope((prev) => prev === 'document' ? 'selection' : 'document')
+                    setBakeMessage(null)
+                  }}
+                  className={cn(
+                    'h-5 px-1.5 text-[10px]',
+                    htmlExportScope === 'selection' && 'text-primary',
+                  )}
+                >
+                  {htmlScopeShortLabel}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {htmlExportScope === 'selection'
+                  ? `当前导出范围：${htmlScopeText}，点击切换为整个页面`
+                  : '当前导出范围：整个页面，点击切换为当前选中节点'}
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {activeTab === 'html' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={handleBakeJSON}
+                  className={cn(
+                    'h-5 w-5',
+                    htmlOutputMode === 'json' && 'text-primary',
+                  )}
+                >
+                  {isBakingJson ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : htmlOutputMode === 'json' ? (
+                    <FileCode2 size={12} />
+                  ) : (
+                    <FileJson size={12} />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{htmlOutputMode === 'json' ? '查看 HTML' : 'HTML 转 JSON'}</TooltipContent>
+            </Tooltip>
+          )}
+          {activeTab === 'html' && htmlOutputMode === 'json' && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={handleSendToUnity}
+                  className={cn(
+                    'h-5 w-5',
+                    isSendingToUnity && 'text-primary',
+                  )}
+                >
+                  {isSendingToUnity ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Send size={12} />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>发送到 Unity</TooltipContent>
+            </Tooltip>
+          )}
+          {hasAI && activeTab !== 'css-vars' && !(activeTab === 'html' && htmlOutputMode === 'json') && (
             <>
               {enhancedCode[activeTab] && !isEnhancing && (
                 <Tooltip>
@@ -453,6 +635,18 @@ ${generatedCode}`
       </div>
 
       {/* Code content */}
+      {activeTab === 'html' && bakeMessage && (
+        <div
+          className={cn(
+            'px-2 py-1 text-[10px] border-b shrink-0',
+            bakeMessage.kind === 'error'
+              ? 'text-red-300 border-red-500/30 bg-red-500/10'
+              : 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10',
+          )}
+        >
+          {bakeMessage.text}
+        </div>
+      )}
       <div className="flex-1 overflow-auto p-2">
         <pre className="text-[10px] leading-relaxed font-mono text-foreground/80 whitespace-pre-wrap break-all">
           <code dangerouslySetInnerHTML={{ __html: highlightedHTML }} />
@@ -462,7 +656,15 @@ ${generatedCode}`
       {/* Footer info */}
       <div className="h-5 flex items-center px-2 border-t border-border shrink-0">
         <span className="text-[9px] text-muted-foreground">
-          {isEnhancing
+          {isSendingToUnity
+            ? '正在发送 JSON 到 Unity...'
+            : isBakingJson
+            ? '正在烘焙 HTML JSON...'
+            : activeTab === 'html' && htmlOutputMode === 'json'
+              ? `当前显示 HTML 烘焙后的 JSON，范围：${htmlScopeText}`
+              : activeTab === 'html'
+              ? `HTML 导出范围：${htmlScopeText}`
+              : isEnhancing
             ? t('code.enhancing')
             : enhancedCode[activeTab]
               ? t('code.enhanced')

@@ -1,6 +1,5 @@
 import * as fabric from 'fabric'
 import type { PenNode, ImageFitMode } from '@/types/pen'
-import { buildEllipseArcPath, isArcEllipse } from '@/utils/arc-path'
 import type {
   PenFill,
   PenStroke,
@@ -17,7 +16,7 @@ import {
 } from './canvas-constants'
 import { defaultLineHeight } from './canvas-text-measure'
 import { applyRotationControls } from './canvas-controls'
-import { lookupIconByName, tryAsyncIconFontResolution } from '@/services/ai/icon-resolver'
+import { lookupIconByName } from '@/services/ai/icon-resolver'
 
 function angleToCoords(
   angleDeg: number,
@@ -373,33 +372,14 @@ export function createFabricObject(
     case 'ellipse': {
       const w = sizeToNumber(node.width, 100)
       const h = sizeToNumber(node.height, 100)
-      if (isArcEllipse(node.startAngle, node.sweepAngle, node.innerRadius)) {
-        const arcD = buildEllipseArcPath(w, h, node.startAngle ?? 0, node.sweepAngle ?? 360, node.innerRadius ?? 0)
-        obj = new fabric.Path(arcD, {
-          ...baseProps,
-          fill: resolveFill(node.fill, w, h),
-          stroke: resolveStrokeColor(node.stroke),
-          strokeWidth: resolveStrokeWidth(node.stroke),
-          strokeUniform: true,
-          fillRule: 'evenodd',
-        }) as FabricObjectWithPenId
-        // The arc path is drawn within a 0,0 → w,h coordinate space.
-        // Override Fabric's auto-computed bounding box to avoid distortion.
-        ;(obj as any).__sourceD = arcD
-        ;(obj as any).__nativeWidth = w
-        ;(obj as any).__nativeHeight = h
-        ;(obj as any).pathOffset = new fabric.Point(w / 2, h / 2)
-        obj.set({ width: w, height: h, scaleX: 1, scaleY: 1 })
-      } else {
-        obj = new fabric.Ellipse({
-          ...baseProps,
-          rx: w / 2,
-          ry: h / 2,
-          fill: resolveFill(node.fill, w, h),
-          stroke: resolveStrokeColor(node.stroke),
-          strokeWidth: resolveStrokeWidth(node.stroke),
-        }) as FabricObjectWithPenId
-      }
+      obj = new fabric.Ellipse({
+        ...baseProps,
+        rx: w / 2,
+        ry: h / 2,
+        fill: resolveFill(node.fill, w, h),
+        stroke: resolveStrokeColor(node.stroke),
+        strokeWidth: resolveStrokeWidth(node.stroke),
+      }) as FabricObjectWithPenId
       break
     }
     case 'line': {
@@ -488,10 +468,6 @@ export function createFabricObject(
       const iconMatch = lookupIconByName(iconName)
       const iconD = iconMatch?.d ?? 'M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0 -6 0'
       const iconStyle = iconMatch?.style ?? 'stroke'
-      // Queue async resolution when local lookup fails — result cached for future lookups
-      if (!iconMatch && iconName) {
-        tryAsyncIconFontResolution(node.id, iconName)
-      }
       const pw = sizeToNumber(node.width, 20)
       const ph = sizeToNumber(node.height, 20)
 
@@ -519,8 +495,6 @@ export function createFabricObject(
       }) as FabricObjectWithPenId
       ;(obj as any).__nativeWidth = obj.width
       ;(obj as any).__nativeHeight = obj.height
-      ;(obj as any).__iconFontName = iconName
-      ;(obj as any).__iconStyle = iconStyle
       if (pw > 0 && ph > 0 && obj.width && obj.height) {
         const uniformScale = Math.min(pw / obj.width, ph / obj.height)
         obj.set({ scaleX: uniformScale, scaleY: uniformScale })

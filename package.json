@@ -1,6 +1,6 @@
 {
     "name": "openpencil",
-    "version": "0.3.3",
+    "version": "0.3.2",
     "description": "The world's first open-source AI-native vector design tool and the first to feature concurrent Agent Teams. Design-as-Code. Turn prompts into UI directly on the live canvas. A modern alternative to Pencil.",
     "author": {
         "name": "ZSeven-W",
@@ -13,10 +13,12 @@
         "openpencil-mcp": "dist/mcp-server.cjs"
     },
     "scripts": {
-        "dev": "bun --bun vite dev --port 3000",
+        "start": "node ./node_modules/vite/bin/vite.js dev --port 7864",
+        "dev": "node ./node_modules/vite/bin/vite.js dev --port 7864",
+        "dev:bun": "bun --bun vite dev --port 7864",
         "build": "bun --bun vite build",
         "preview": "bun --bun vite preview",
-        "test": "bun --bun vitest run --passWithNoTests",
+        "test": "node ./node_modules/vitest/vitest.mjs run --passWithNoTests",
         "mcp:compile": "esbuild src/mcp/server.ts --bundle --platform=node --target=node20 --outfile=dist/mcp-server.cjs --format=cjs --sourcemap --alias:@=src --define:import.meta.env={}",
         "mcp:dev": "bun run src/mcp/server.ts",
         "electron:dev": "bun run scripts/electron-dev.ts",

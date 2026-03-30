@@ -65,6 +65,14 @@ const CSS_RULES: TokenRule[] = [
   { pattern: /\b(important|inherit|initial|unset|none|auto|solid|dashed|flex|grid|block|inline|absolute|relative|fixed|sticky)\b/g, className: 'syn-keyword' },
 ]
 
+const JSON_RULES: TokenRule[] = [
+  { pattern: /"(?:[^"\\]|\\.)*"(?=\s*:)/g, className: 'syn-attr' },
+  { pattern: /"(?:[^"\\]|\\.)*"/g, className: 'syn-string' },
+  { pattern: /\b-?\d+\.?\d*\b/g, className: 'syn-number' },
+  { pattern: /\b(true|false|null)\b/g, className: 'syn-keyword' },
+  { pattern: /[{}[\],:]/g, className: 'syn-bracket' },
+]
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -159,13 +167,14 @@ const DART_RULES: TokenRule[] = [
   { pattern: /[{}()]/g, className: 'syn-bracket' },
 ]
 
-export type SyntaxLanguage = 'jsx' | 'html' | 'css' | 'swift' | 'kotlin' | 'dart'
+export type SyntaxLanguage = 'jsx' | 'html' | 'css' | 'json' | 'swift' | 'kotlin' | 'dart'
 
 export function highlightCode(code: string, language: SyntaxLanguage): string {
   const ruleMap: Record<SyntaxLanguage, TokenRule[]> = {
     jsx: JSX_RULES,
     html: HTML_RULES,
     css: CSS_RULES,
+    json: JSON_RULES,
     swift: SWIFT_RULES,
     kotlin: KOTLIN_RULES,
     dart: DART_RULES,

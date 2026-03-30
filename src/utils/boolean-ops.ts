@@ -1,4 +1,4 @@
-import paper from 'paper'
+import paper from 'paper/dist/paper-core'
 import { nanoid } from 'nanoid'
 import type { PenNode, PathNode } from '@/types/pen'
 

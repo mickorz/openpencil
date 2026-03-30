@@ -1,0 +1,13 @@
+# Managed by superpowers-installer
+# Superpowers Codex multi-agent roles
+[agents]
+max_threads = 6
+max_depth = 1
+
+[agents.explorer]
+description = "Read-only codebase explorer for gathering evidence before changes."
+config_file = "agents/explorer.toml"
+
+[agents.reviewer]
+description = "PR reviewer focused on correctness, regressions, and missing tests."
+config_file = "agents/reviewer.toml"

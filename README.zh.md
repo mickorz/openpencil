@@ -5,8 +5,8 @@
 <h1 align="center">OpenPencil</h1>
 
 <p align="center">
-  <strong>全球首个 AI 原生开源矢量设计工具。</strong><br />
-  <sub>并发 Agent 团队 &bull; 设计即代码 &bull; 内置 MCP 服务器 &bull; 多模型智能</sub>
+  <strong>AI 原生开源设计工具。设计即代码。</strong><br />
+  从提示词到画布 UI。多智能体编排。内置 MCP 服务器。代码生成。
 </p>
 
 <p align="center">
@@ -14,75 +14,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ZSeven-W/openpencil/stargazers"><img src="https://img.shields.io/github/stars/ZSeven-W/openpencil?style=flat&color=cfb537" alt="Stars" /></a>
-  <a href="https://github.com/ZSeven-W/openpencil/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ZSeven-W/openpencil?color=64748b" alt="License" /></a>
+  <a href="https://github.com/ZSeven-W/openpencil/stargazers"><img src="https://img.shields.io/github/stars/ZSeven-W/openpencil?style=flat" alt="Stars" /></a>
+  <a href="https://github.com/ZSeven-W/openpencil/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ZSeven-W/openpencil" alt="License" /></a>
   <a href="https://github.com/ZSeven-W/openpencil/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/ZSeven-W/openpencil/ci.yml?branch=main&label=CI" alt="CI" /></a>
-  <a href="https://discord.gg/KwXp6BJD"><img src="https://img.shields.io/discord/1476517942949580952?label=Discord&logo=discord&logoColor=white&color=5865F2" alt="Discord" /></a>
+  <a href="https://discord.gg/KwXp6BJD"><img src="https://img.shields.io/discord/1476517942949580952?label=Discord&logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
-
-<br />
 
 <p align="center">
-  <a href="https://oss.ioa.tech/zseven/openpencil/a46e24733239ce24de36702342201033.mp4">
-    <img src="./screenshot/op-cover.png" alt="OpenPencil — 点击观看演示视频" width="100%" />
-  </a>
+  <a href="#quick-start">快速开始</a> ·
+  <a href="#ai-native-design">AI</a> ·
+  <a href="#features">功能特性</a> ·
+  <a href="https://discord.gg/KwXp6BJD">Discord</a> ·
+  <a href="#contributing">参与贡献</a>
 </p>
-<p align="center"><sub>点击图片观看演示视频</sub></p>
-
-<br />
-
-## 为什么选择 OpenPencil
-
-<table>
-<tr>
-<td width="50%">
-
-### 🎨 提示词 → 画布
-
-用自然语言描述任意 UI，实时以流式动画在无限画布上生成。选中已有元素，通过对话即可修改设计。
-
-</td>
-<td width="50%">
-
-### 🤖 并发 Agent 团队
-
-编排器将复杂页面分解为空间子任务。多个 AI 智能体同时处理不同区块 — Hero、功能区、页脚 — 全部并行流式生成。
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 🧠 多模型智能
-
-自动适配每个模型的能力。Claude 获得完整提示词和思考模式；GPT-4o/Gemini 关闭思考模式；小模型（MiniMax、通义千问、Llama）使用简化提示词以确保输出可靠性。
-
-</td>
-<td width="50%">
-
-### 🔌 MCP 服务器
-
-一键安装到 Claude Code、Codex、Gemini、OpenCode、Kiro 或 Copilot CLI。从终端进行设计 — 通过任意 MCP 兼容的智能体读取、创建和修改 `.op` 文件。
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 📦 设计即代码
-
-`.op` 文件是 JSON — 人类可读、对 Git 友好、可进行 diff 对比。设计变量生成 CSS 自定义属性。代码导出为 React + Tailwind 或 HTML + CSS。
-
-</td>
-<td width="50%">
-
-### 🖥️ 全平台运行
-
-Web 应用 + 通过 Electron 支持 macOS、Windows 和 Linux 原生桌面端。从 GitHub Releases 自动更新。`.op` 文件关联 — 双击即可打开。
-
-</td>
-</tr>
-</table>
 
 ## 快速开始
 
@@ -104,6 +48,8 @@ bun run electron:dev
 
 ## AI 原生设计
 
+OpenPencil 从底层就围绕 AI 构建——不是作为插件，而是作为核心工作流。
+
 **提示词生成 UI**
 - **文字转设计** — 描述一个页面，实时以流式动画在画布上生成
 - **编排器** — 将复杂页面分解为空间子任务，支持并行生成
@@ -117,16 +63,10 @@ bun run electron:dev
 | **Claude Code** | 无需配置 — 使用 Claude Agent SDK 本地 OAuth |
 | **Codex CLI** | 在 Agent 设置中连接（`Cmd+,`） |
 | **OpenCode** | 在 Agent 设置中连接（`Cmd+,`） |
-| **GitHub Copilot** | 运行 `copilot login` 后在 Agent 设置中连接（`Cmd+,`） |
-
-**模型能力配置** — 自动根据模型层级适配提示词、思考模式和超时时间。完整层级模型（Claude）获得完整提示词；标准层级模型（GPT-4o、Gemini、DeepSeek）关闭思考模式；基础层级模型（MiniMax、通义千问、Llama、Mistral）使用简化的嵌套 JSON 提示词以确保最大可靠性。
 
 **MCP 服务器**
-- 内置 MCP 服务器 — 一键安装到 Claude Code / Codex / Gemini / OpenCode / Kiro / Copilot CLI
+- 内置 MCP 服务器 — 一键安装到 Claude Code / Codex / Gemini / OpenCode / Kiro CLI
 - 从终端进行设计自动化：通过任意 MCP 兼容的智能体读取、创建和修改 `.op` 文件
-- **分层设计工作流** — `design_skeleton` → `design_content` → `design_refine`，实现更高保真度的多区块设计
-- **分段提示词检索** — 按需加载所需的设计知识（schema、layout、roles、icons、planning 等）
-- 多页面支持 — 通过 MCP 工具创建、重命名、重新排序和复制页面
 
 **代码生成**
 - React + Tailwind CSS
@@ -154,7 +94,6 @@ bun run electron:dev
 
 **桌面应用**
 - 通过 Electron 支持原生 macOS、Windows 和 Linux
-- `.op` 文件关联 — 双击即可打开，单实例锁定
 - 从 GitHub Releases 自动更新
 - 原生应用菜单和文件对话框
 
@@ -167,7 +106,7 @@ bun run electron:dev
 | **状态管理** | Zustand v5 |
 | **服务器** | Nitro |
 | **桌面端** | Electron 35 |
-| **AI** | Anthropic SDK · Claude Agent SDK · OpenCode SDK · Copilot SDK |
+| **AI** | Anthropic SDK · Claude Agent SDK · OpenCode SDK |
 | **运行时** | Bun · Vite 7 |
 | **文件格式** | `.op` — 基于 JSON，人类可读，对 Git 友好 |
 
@@ -186,7 +125,7 @@ src/
   uikit/           可复用组件套件系统
 server/
   api/ai/          Nitro API — 流式聊天、生成、验证
-  utils/           Claude CLI、OpenCode、Codex、Copilot 客户端封装
+  utils/           Claude CLI、OpenCode、Codex 客户端封装
 electron/
   main.ts          窗口、Nitro 子进程、原生菜单、自动更新
   preload.ts       IPC 桥接
@@ -236,11 +175,10 @@ bun run electron:build     # Electron 打包
 - [x] 设计变量与令牌，支持 CSS 同步
 - [x] 组件系统（实例与覆盖）
 - [x] 带编排器的 AI 设计生成
-- [x] MCP 服务器集成与分层设计工作流
+- [x] MCP 服务器集成
 - [x] 多页面支持
 - [x] Figma `.fig` 导入
 - [x] 布尔运算（合并、减去、相交）
-- [x] 多模型能力配置
 - [ ] 协同编辑
 - [ ] 插件系统
 
@@ -261,17 +199,6 @@ bun run electron:build     # Electron 打包
 **飞书交流群**
 
 <img src="./screenshot/557517811-62010928-d91a-4223-bc10-9ee7a4fbf043.jpg" alt="飞书交流群" width="240" />
-
-
-## Star History
-
-<a href="https://star-history.com/#ZSeven-W/openpencil&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ZSeven-W/openpencil&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ZSeven-W/openpencil&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ZSeven-W/openpencil&type=Date" width="100%" />
- </picture>
-</a>
 
 ## 许可证
 

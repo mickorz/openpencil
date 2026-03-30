@@ -74,13 +74,12 @@ RULES:
 - clipContent: true on cards with cornerRadius + image children.
 - Text: NEVER set height. Short text (titles, labels, buttons) — omit textGrowth. Long text (>15 chars wrapping) — textGrowth="fixed-width", width="fill_container", lineHeight=1.4-1.6.
 - lineHeight: Display 40-56px → 0.9-1.0. Heading 20-36px → 1.0-1.2. Body → 1.4-1.6. letterSpacing: -0.5 to -1 for headlines, 1-3 for uppercase.
-- Icons: ALWAYS use icon_font nodes with iconFontName (lucide names: search, bell, user, heart, star, plus, x, check, chevron-right, settings, etc). Sizes: 14/20/24px. NEVER use emoji characters (🍕🍔⭐✅🔔 etc) as icon substitutes — they cannot render on canvas.
+- Icons: icon_font nodes with iconFontName (lucide names: search, bell, user, heart, star, plus, x, check, chevron-right, settings, etc). Sizes: 14/20/24px.
 - CJK fonts: "Noto Sans SC"/"Noto Sans JP"/"Noto Sans KR" for headings. CJK lineHeight: 1.3-1.4 headings, 1.6-1.8 body.
 - Buttons: frame(padding=[12,24], justifyContent="center") > text. Icon+text: frame(layout="horizontal", gap=8, alignItems="center", padding=[8,16]).
 - Card rows: ALL cards width="fill_container" + height="fill_container".
 - FORMS: ALL inputs AND button use width="fill_container". gap=16-20.
 - Phone mockup: ONE frame, w=260-300, h=520-580, cornerRadius=32, solid fill + 1px stroke.
-- Z-order: Earlier siblings render on top. Overlay elements (badges, indicators, floating buttons) MUST come BEFORE the content they overlap.
 
 FORMAT: _parent (null=root, else parent-id). Parent before children.
 ${BLOCK}json
@@ -93,51 +92,6 @@ ${BLOCK}json
 {"_parent":"root","id":"desc","type":"text","name":"Description","content":"AI-powered vocabulary learning that adapts to your pace","fontSize":16,"textGrowth":"fixed-width","width":"fill_container","lineHeight":1.5,"fill":[{"type":"solid","color":"#64748B"}]}
 {"_parent":"root","id":"cta","type":"frame","name":"CTA Button","padding":[14,28],"cornerRadius":10,"justifyContent":"center","fill":[{"type":"solid","color":"#2563EB"}]}
 {"_parent":"cta","id":"cta-text","type":"text","name":"CTA Label","content":"Get Started","fontSize":16,"fontWeight":600,"fill":[{"type":"solid","color":"#FFFFFF"}]}
-${BLOCK}
-
-Start with ${BLOCK}json immediately. No preamble.`
-
-/**
- * Simplified sub-agent prompt for weaker models (basic tier).
- * Uses nested JSON with children arrays (not flat JSONL with _parent).
- * Keeps only essential node types and rules.
- */
-export const SUB_AGENT_PROMPT_SIMPLIFIED = `Generate a UI section as a nested JSON tree. Output a ${BLOCK}json block with a single root object containing nested "children" arrays.
-
-TYPES:
-frame (width,height,layout,gap,padding,justifyContent,alignItems,cornerRadius,fill,children), rectangle (width,height,cornerRadius,fill), text (content,fontFamily,fontSize,fontWeight,fill,width,textAlign), icon_font (iconFontName,width,height,fill)
-SHARED: id, type, name
-
-RULES:
-- Root: type="frame", width="fill_container", height="fit_content", layout="vertical".
-- Children go in "children" arrays. No x/y on layout children.
-- width/height: number | "fill_container" | "fit_content".
-- fill: [{"type":"solid","color":"#hex"}].
-- Text: never set height. Use width="fill_container" for wrapping text.
-- Icons: use icon_font with iconFontName (lucide names: search, bell, user, heart, star, plus, x, check, chevron-right, settings). Sizes: 16/20/24px.
-- Buttons: frame with padding=[12,24] containing a text child.
-- No emoji characters. No markdown. No explanation.
-
-EXAMPLE:
-${BLOCK}json
-{
-  "id": "root",
-  "type": "frame",
-  "name": "Hero",
-  "width": "fill_container",
-  "height": "fit_content",
-  "layout": "vertical",
-  "gap": 24,
-  "padding": [48, 24],
-  "fill": [{"type": "solid", "color": "#F8FAFC"}],
-  "children": [
-    {"id": "title", "type": "text", "name": "Headline", "content": "Learn Smarter", "fontSize": 48, "fontWeight": 700, "fontFamily": "Space Grotesk", "fill": [{"type": "solid", "color": "#0F172A"}]},
-    {"id": "desc", "type": "text", "name": "Description", "content": "AI-powered learning", "fontSize": 16, "width": "fill_container", "fill": [{"type": "solid", "color": "#64748B"}]},
-    {"id": "cta", "type": "frame", "name": "CTA", "padding": [14, 28], "cornerRadius": 10, "justifyContent": "center", "fill": [{"type": "solid", "color": "#2563EB"}], "children": [
-      {"id": "cta-text", "type": "text", "content": "Get Started", "fontSize": 16, "fontWeight": 600, "fill": [{"type": "solid", "color": "#FFFFFF"}]}
-    ]}
-  ]
-}
 ${BLOCK}
 
 Start with ${BLOCK}json immediately. No preamble.`
